@@ -4,11 +4,41 @@ DELTA is a local-first, encrypted diary and habit tracker shipped as one Go
 binary. `delta serve` serves the REST API and the embedded dark, monospace web
 shell from localhost.
 
+## A day in DELTA
+
+Everything starts at the pixel grid: a year per row, a pixel per day, colored
+by your day rating or your daily habit score. It is the map of your diary —
+click any pixel to open that day, including empty past days to backfill:
+
+![The pixel grid across multiple years](docs/screenshots/grid.png)
+
+Closing the day is a short guided wizard. It opens with freeform prose — write
+as much or as little as you like:
+
+![Entry wizard: freeform text](docs/screenshots/entry-freeform.png)
+
+Next come the goals you set for today the night before — check off what
+happened — plus three gratitudes and the three Ws: what went well, what could
+have gone better, and your goal for tomorrow:
+
+![Entry wizard: goals, gratitudes, and the three Ws](docs/screenshots/entry-goals.png)
+
+Then rate the day on four 1–5 scales — Total is the felt verdict, never an
+average — log hours worked on personal projects, and check off your habits:
+
+![Entry wizard: ratings and habits](docs/screenshots/entry-ratings.png)
+
+Saving rolls straight into setting tomorrow's five goals, and the grid grows by
+one pixel. Over time, Stats turns the entries into streaks, per-habit
+completion rates, and monthly trends:
+
+![Stats: streaks, habit completion, and monthly averages](docs/screenshots/stats.png)
+
 ## Install
 
 ### GitHub Release
 
-Download the archive for your platform from the [latest GitHub Release](https://github.com/ferriskleier/delta/releases), extract `delta`, and put it on your `PATH`. Releases contain macOS and Linux binaries for both `amd64` and `arm64`, plus a checksum file. During build-out, release tags use SemVer 0.x; `v1.0.0` is reserved for the trusted diary release.
+Download the archive for your platform from the [latest GitHub Release](https://github.com/ferriskleier/delta/releases), extract `delta`, and put it on your `PATH`. Releases contain macOS and Linux binaries for both `amd64` and `arm64`, plus a checksum file.
 
 Verify the downloaded archive before extracting it with the checksum file and the checksum tool available on your platform, for example:
 
