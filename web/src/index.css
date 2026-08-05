@@ -12,6 +12,7 @@
   --line: #232b3a;
   --card: #131926;
   --empty: #1a2231;
+  --empty-journal: #242e42;
   --bad: #ff3b5c;
   --good: #00e676;
   --rating-1: var(--bad);
@@ -666,6 +667,7 @@ input:focus-visible {
   background: var(--empty);
 }
 
+.px-journal { background: var(--empty-journal); }
 .px-r1 { background: var(--rating-1); }
 .px-r2 { background: var(--rating-2); }
 .px-r3 { background: var(--rating-3); }
@@ -1447,6 +1449,14 @@ input:focus-visible {
   color: var(--dim);
 }
 
+/* Centred on the bar itself rather than in the flex flow, so the stats on the
+   left never shift it off centre. */
+.status-version {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
 .page-chip {
   padding: 0 8px;
   background: var(--acc);
@@ -1644,7 +1654,7 @@ kbd {
 .wizard-line-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 6px;
 }
 
 .wizard-goal-row,
@@ -2229,7 +2239,8 @@ kbd {
     white-space: nowrap;
   }
 
-  .status-bar > span:nth-child(n + 4):not(.key-hints) {
+  .status-bar > span:nth-child(n + 4):not(.key-hints),
+  .status-version {
     display: none;
   }
 

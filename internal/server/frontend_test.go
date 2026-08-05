@@ -206,3 +206,38 @@ func TestEmbeddedFrontendContainsDistPlaceholder(t *testing.T) {
 		t.Fatalf("frontend token placeholder was not replaced: %s", recorder.Body.String())
 	}
 }
+
+func TestEmbeddedFrontendInjectsVersionWhenConfigured(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "web", "index.html"))
+	if err != nil {
+		t.Fatalf("read frontend source: %v", err)
+	}
+	const placeholder = `<script>window.__DELTA_VERSION__ = null;</script>`
+	if !bytes.Contains(source, []byte(placeholder)) {
+		t.Fatal("web/index.html is missing the frontend version placeholder")
+	}
+
+	files := fstest.MapFS{
+		"dist/index.html": &fstest.MapFile{Data: source},
+	}
+	assignments := regexp.MustCompile(`window\.__DELTA_VERSION__ = ([^;]+);`)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/", nil)
+	server.NewHandler(nil, "test-token", server.WithFrontendFS(files), server.WithVersion("v1.2.3")).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("frontend status = %d, want 200", recorder.Code)
+	}
+	if got := assignments.FindAllSubmatch(recorder.Body.Bytes(), -1); len(got) != 1 || string(got[0][1]) != `"v1.2.3"` {
+		t.Fatalf("frontend version assignments = %q, want a single JSON-quoted version", got)
+	}
+
+	withoutVersion := httptest.NewRecorder()
+	server.NewHandler(nil, "test-token", server.WithFrontendFS(files)).ServeHTTP(withoutVersion, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/", nil))
+	if withoutVersion.Code != http.StatusOK {
+		t.Fatalf("frontend status without version = %d, want 200", withoutVersion.Code)
+	}
+	if got := assignments.FindAllSubmatch(withoutVersion.Body.Bytes(), -1); len(got) != 1 || string(got[0][1]) != "null" {
+		t.Fatalf("frontend version assignments without option = %q, want only the null placeholder", got)
+	}
+}

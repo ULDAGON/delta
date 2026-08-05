@@ -38,6 +38,7 @@ type HandlerOption func(*handlerConfig)
 type handlerConfig struct {
 	frontendFS     fs.FS
 	settingsConfig *config.Config
+	version        string
 }
 
 // WithFrontendFS replaces the embedded frontend filesystem. It is intended
@@ -57,9 +58,19 @@ func WithSettingsConfig(value config.Config) HandlerOption {
 	}
 }
 
+// WithVersion supplies the binary's version string to the frontend. The
+// option is used by the real server; tests that omit it serve the page with
+// its version placeholder untouched.
+func WithVersion(version string) HandlerOption {
+	return func(config *handlerConfig) {
+		config.version = version
+	}
+}
+
 type frontend struct {
 	files      fs.FS
 	fileServer http.Handler
+	version    string
 	err        error
 }
 
@@ -74,7 +85,10 @@ func newFrontend(files fs.FS) frontend {
 	}
 }
 
-const frontendTokenPlaceholder = `<script>window.__DELTA_TOKEN__ = null;</script>`
+const (
+	frontendTokenPlaceholder   = `<script>window.__DELTA_TOKEN__ = null;</script>`
+	frontendVersionPlaceholder = `<script>window.__DELTA_VERSION__ = null;</script>`
+)
 
 func (f frontend) serveHTTP(w http.ResponseWriter, r *http.Request, token string) {
 	if f.err != nil {
@@ -102,6 +116,9 @@ func (f frontend) serveHTTP(w http.ResponseWriter, r *http.Request, token string
 	if token != "" {
 		index = injectFrontendToken(index, token)
 	}
+	if f.version != "" {
+		index = injectFrontendVersion(index, f.version)
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(index))
 }
@@ -111,6 +128,22 @@ func injectFrontendToken(index []byte, token string) []byte {
 	script := []byte(`<script>window.__DELTA_TOKEN__ = ` + string(encoded) + `;</script>`)
 	if bytes.Contains(index, []byte(frontendTokenPlaceholder)) {
 		return bytes.Replace(index, []byte(frontendTokenPlaceholder), script, 1)
+	}
+	if head := bytes.Index(index, []byte("</head>")); head >= 0 {
+		result := make([]byte, 0, len(index)+len(script))
+		result = append(result, index[:head]...)
+		result = append(result, script...)
+		result = append(result, index[head:]...)
+		return result
+	}
+	return append(append([]byte(nil), index...), script...)
+}
+
+func injectFrontendVersion(index []byte, version string) []byte {
+	encoded, _ := json.Marshal(version)
+	script := []byte(`<script>window.__DELTA_VERSION__ = ` + string(encoded) + `;</script>`)
+	if bytes.Contains(index, []byte(frontendVersionPlaceholder)) {
+		return bytes.Replace(index, []byte(frontendVersionPlaceholder), script, 1)
 	}
 	if head := bytes.Index(index, []byte("</head>")); head >= 0 {
 		result := make([]byte, 0, len(index)+len(script))
@@ -152,6 +185,7 @@ func NewHandler(svc *service.Service, token string, options ...HandlerOption) ht
 		}
 	}
 	frontend := newFrontend(config.frontendFS)
+	frontend.version = config.version
 	auth := &authState{token: token}
 	settings := newSettingsState(svc, token, config.settingsConfig, auth)
 

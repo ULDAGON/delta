@@ -202,7 +202,7 @@ func runServe(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	c.APIAddress = boundAddress
 	svc := service.New(store)
-	httpServer := &http.Server{Handler: server.NewHandler(svc, c.APIToken, server.WithSettingsConfig(c))}
+	httpServer := &http.Server{Handler: server.NewHandler(svc, c.APIToken, server.WithSettingsConfig(c), server.WithVersion(currentBuildMetadata().version))}
 	if _, err := fmt.Fprintf(stdout, "delta %s serving %s on http://%s\n", currentBuildMetadata().version, c.DatabasePath, listener.Addr().String()); err != nil {
 		return err
 	}
@@ -309,7 +309,7 @@ func completeSetup(ctx context.Context, request server.SetupRequest, boundAddres
 		done.LastDate = entries[len(entries)-1].Date
 	}
 	*storeSlot = store
-	return server.SetupCompletion{Done: done, Handler: server.NewHandler(svc, c.APIToken, server.WithSettingsConfig(c))}, nil
+	return server.SetupCompletion{Done: done, Handler: server.NewHandler(svc, c.APIToken, server.WithSettingsConfig(c), server.WithVersion(currentBuildMetadata().version))}, nil
 }
 
 func openBrowser(address string) {

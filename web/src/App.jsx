@@ -1187,7 +1187,7 @@ function EntryWizard({ initialDate, onClose }) {
                 {draftGoals.map((goal, index) => (
                   <label className="wizard-line-input" key={index}>
                     <span>{index + 1}.</span>
-                    <input autoFocus={index === 0} onChange={(event) => updateDraftGoal(index, event.target.value)} placeholder="goal for tomorrow" value={goal.text} />
+                    <input autoFocus={index === 0} onChange={(event) => updateDraftGoal(index, event.target.value)} value={goal.text} />
                   </label>
                 ))}
               </div>}
@@ -1212,9 +1212,9 @@ function EntryWizard({ initialDate, onClose }) {
     }
     if (currentStep.id === "day") {
       const wsFields = [
-        ["went_well", "went well", "what went well today?"],
-        ["could_have_gone_better", "could be better", "what could have gone better?"],
-        ["goal_for_tomorrow", "goal tomorrow", "one intention for tomorrow"],
+        ["went_well", "What went well today?"],
+        ["could_have_gone_better", "What could have gone better?"],
+        ["goal_for_tomorrow", "What are my goals for tomorrow?"],
       ];
       return (
         <div className="wizard-day">
@@ -1225,7 +1225,7 @@ function EntryWizard({ initialDate, onClose }) {
                 <div className="wizard-goal-row" key={index}>
                   <button aria-label={`${goal.checked ? "Uncheck" : "Check"} goal ${index + 1}`} className={`wizard-check ${goal.checked ? "checked" : ""}`} onClick={() => updateGoal(index, "checked", !goal.checked)} type="button">{goal.checked ? "[x]" : "[ ]"}</button>
                   {/* Goal text was written the night before — Tab runs the check buttons, so the inputs stay out of the tab order. */}
-                  <input onChange={(event) => updateGoal(index, "text", event.target.value)} placeholder="goal from last night" tabIndex={-1} value={goal.text} />
+                  <input onChange={(event) => updateGoal(index, "text", event.target.value)} tabIndex={-1} value={goal.text} />
                 </div>
               ))}
             </div>
@@ -1234,13 +1234,13 @@ function EntryWizard({ initialDate, onClose }) {
             <h2>Three gratitudes</h2>
             <div className="wizard-line-list">
               {entry.gratitudes.map((gratitude, index) => (
-                <label className="wizard-line-input wizard-dashed-input" key={index}><span>-</span><input aria-label={`gratitude ${index + 1}`} onChange={(event) => updateGratitude(index, event.target.value)} placeholder="grateful for…" value={gratitude} /></label>
+                <label className="wizard-line-input wizard-dashed-input" key={index}><span>-</span><input aria-label={`gratitude ${index + 1}`} onChange={(event) => updateGratitude(index, event.target.value)} value={gratitude} /></label>
               ))}
             </div>
           </section>
           <section className="wizard-day-section">
             <h2>The three Ws</h2>
-            <div className="wizard-line-list">{wsFields.map(([field, label, placeholder]) => <label className="wizard-line-input wizard-ws-input" key={field}><span>{label}</span><input onChange={(event) => updateWs(field, event.target.value)} placeholder={placeholder} value={entry.ws[field]} /></label>)}</div>
+            <div className="wizard-line-list">{wsFields.map(([field, label]) => <label className="wizard-line-input wizard-ws-input" key={field}><span>{label}</span><input onChange={(event) => updateWs(field, event.target.value)} value={entry.ws[field]} /></label>)}</div>
           </section>
         </div>
       );
@@ -1351,9 +1351,16 @@ function YearRail({ year, setYear, years = [year] }) {
 function pixelClass(day, view) {
   if (!day?.has_entry) return undefined;
   if (view === "rating") {
-    return ratingRampClass(day.rating);
+    return ratingRampClass(day.rating) ?? journalOnlyClass(day);
   }
+  if (view === "habit" && day.habit_score == null) return journalOnlyClass(day);
   return undefined;
+}
+
+// A day carrying a journal but no metric for the current view still reads as
+// written-on, so it lifts off the empty base instead of looking untouched.
+function journalOnlyClass(day) {
+  return day.journal ? "px-journal" : undefined;
 }
 
 function ratingRampClass(value) {
@@ -1919,7 +1926,7 @@ function StatsPage({ year, setYear }) {
           </section>
           <section className="stats-tile">
             <span className="section-label">averages · {year}</span>
-            <div className="stats-detail-row"><span>Total rating</span><strong>{totalAverage == null ? "—" : `${totalAverage.toFixed(1)} / 5`}</strong></div>
+            <div className="stats-detail-row"><span>Total rating</span><strong>{totalAverage == null ? "—" : totalAverage.toFixed(2)}</strong></div>
             <div className="stats-detail-row"><span>Habit score</span><strong>{habitAverage == null ? "—" : formatPercent(habitAverage)}</strong></div>
             <div className="stats-detail-row"><span>Work hours</span><strong>{workAverage == null ? "—" : formatHours(workAverage)}</strong></div>
           </section>
@@ -2637,14 +2644,16 @@ function isTypingTarget(target) {
 }
 
 function StatusBar({ page, summary, year, activeHabitCount, lastBackup }) {
-  const average = summary?.average_rating == null ? "—" : summary.average_rating.toFixed(1);
-  const monthAverage = summary?.month_average_rating == null ? "—" : summary.month_average_rating.toFixed(1);
+  const average = summary?.average_rating == null ? "—" : summary.average_rating.toFixed(2);
+  const monthAverage = summary?.month_average_rating == null ? "—" : summary.month_average_rating.toFixed(2);
   const habit = summary?.habit_percent == null ? "—" : `${Math.round(summary.habit_percent)}%`;
   const monthHabit = summary?.month_habit_percent == null ? "—" : `${Math.round(summary.month_habit_percent)}%`;
   // The yearly figures follow the year rail while the monthly ones are always
   // the current calendar month, so both periods are named rather than implied.
   const yearName = year == null ? "yr" : year;
   const monthName = MONTHS[new Date().getMonth()].toLowerCase();
+  // The server injects the binary version into the page; it is absent in dev.
+  const version = window.__DELTA_VERSION__;
   return (
     <footer className="status-bar">
       <span className="page-chip">{page.toUpperCase()}</span>
@@ -2661,6 +2670,7 @@ function StatusBar({ page, summary, year, activeHabitCount, lastBackup }) {
           <span>habit {yearName} {habit} · {monthName} {monthHabit}</span>
         </>
       )}
+      {version && <span className="status-version">{version}</span>}
       <span className="key-hints">
         <kbd>/</kbd> search · <kbd>n</kbd> new entry · <kbd>t</kbd> toggle view · <kbd>p</kbd> hold for phases
       </span>
