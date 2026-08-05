@@ -99,6 +99,35 @@ the per-machine API token needed by CLI and agent clients.
 For headless setup, `delta init --path <p>` and
 `delta init --open <p> --key-stdin` remain available.
 
+## Run in the background
+
+`delta service install` registers `delta serve` as a login service so it runs
+in the background and restarts after crashes:
+
+```sh
+delta service install
+```
+
+On Linux this writes a systemd user unit to
+`~/.config/systemd/user/delta.service` and runs
+`systemctl --user enable --now delta.service`; logs go to
+`journalctl --user -u delta.service`. On macOS it writes a launchd agent to
+`~/Library/LaunchAgents/com.ferriskleier.delta.plist`; logs go to
+`~/Library/Logs/delta/serve.log`. `delta service status`, `stop`, `start`, and
+`uninstall` manage the service afterwards.
+
+To manage the Linux unit with systemctl directly:
+
+```sh
+systemctl --user status delta.service    # running?
+systemctl --user restart delta.service   # e.g. after replacing the binary
+systemctl --user disable --now delta.service
+```
+
+User services stop at logout; on an always-on machine, run
+`loginctl enable-linger $USER` once to keep the service running without an
+active session.
+
 ## Frontend development
 
 Initialize a local diary, start `delta serve` on its default
