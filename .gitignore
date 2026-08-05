@@ -1,0 +1,20 @@
+# Go build artifacts
+/delta
+*.test
+*.out
+
+# Frontend dependencies and generated output
+node_modules/
+dist/
+frontend/dist/
+!/web/dist/
+/web/dist/*
+!/web/dist/.gitkeep
+
+# Local databases and OS metadata
+*.db
+*.db-*
+.DS_Store
+
+# Local configuration
+.env

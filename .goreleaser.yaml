@@ -1,0 +1,50 @@
+version: 2
+
+project_name: delta
+
+before:
+  hooks:
+    - npm ci --prefix web
+    - npm run build --prefix web
+
+builds:
+  - id: delta
+    main: ./cmd/delta
+    binary: delta
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/ferriskleier/delta/internal/cli.Version={{ .Version }}
+        -X github.com/ferriskleier/delta/internal/cli.Commit={{ .Commit }}
+        -X github.com/ferriskleier/delta/internal/cli.Date={{ .Date }}
+
+archives:
+  - id: archives
+    ids:
+      - delta
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+  - id: binaries
+    ids:
+      - delta
+    formats:
+      - binary
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  draft: false
+  prerelease: auto
