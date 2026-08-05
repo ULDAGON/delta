@@ -1,6 +1,9 @@
 package cli
 
-import "runtime/debug"
+import (
+	"runtime/debug"
+	"strings"
+)
 
 const (
 	defaultVersion = "dev"
@@ -30,6 +33,22 @@ type buildMetadata struct {
 	version string
 	commit  string
 	date    string
+}
+
+// describe renders the version line, leaving out commit and date when the
+// build carries no VCS metadata (`go install` builds from the module proxy).
+func (m buildMetadata) describe() string {
+	details := make([]string, 0, 2)
+	if m.commit != "" && m.commit != unknownValue {
+		details = append(details, "commit "+m.commit)
+	}
+	if m.date != "" && m.date != unknownValue {
+		details = append(details, m.date)
+	}
+	if len(details) == 0 {
+		return "delta " + m.version
+	}
+	return "delta " + m.version + " (" + strings.Join(details, ", ") + ")"
 }
 
 func resolveBuildMetadata(version, commit, date string, info *debug.BuildInfo) buildMetadata {

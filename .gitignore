@@ -3,13 +3,12 @@
 *.test
 *.out
 
-# Frontend dependencies and generated output
+# Frontend dependencies and generated output. web/dist is committed so
+# `go install` builds embed the frontend; rebuild it before tagging a release.
 node_modules/
 dist/
 frontend/dist/
 !/web/dist/
-/web/dist/*
-!/web/dist/.gitkeep
 
 # Local databases and OS metadata
 *.db

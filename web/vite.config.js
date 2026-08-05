@@ -6,8 +6,8 @@ const deltaAPIToken = process.env.DELTA_API_TOKEN;
 export default defineConfig({
   plugins: [react()],
   build: {
-    // Keep the committed embed placeholder; generated files are ignored by git.
-    emptyOutDir: false,
+    // dist is committed for `go install` embedding; clear stale hashed assets.
+    emptyOutDir: true,
   },
   server: {
     proxy: {

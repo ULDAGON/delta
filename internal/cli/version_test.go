@@ -37,6 +37,57 @@ func TestRunVersionReportsInjectedBuildMetadata(t *testing.T) {
 	}
 }
 
+func TestRunVersionOmitsUnknownCommitAndDate(t *testing.T) {
+	originalVersion, originalCommit, originalDate := Version, Commit, Date
+	originalBuildInfoGetter := buildInfoGetter
+	t.Cleanup(func() {
+		Version, Commit, Date = originalVersion, originalCommit, originalDate
+		buildInfoGetter = originalBuildInfoGetter
+	})
+
+	Version, Commit, Date = defaultVersion, unknownValue, unknownValue
+	buildInfoGetter = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{Main: debug.Module{Version: "v1.0.1"}}, true
+	}
+
+	var output bytes.Buffer
+	if err := Run(context.Background(), []string{"--version"}, nil, &output, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+
+	const want = "delta v1.0.1\n"
+	if got := output.String(); got != want {
+		t.Fatalf("version output = %q, want %q", got, want)
+	}
+}
+
+func TestRunVersionOmitsOnlyUnknownDate(t *testing.T) {
+	originalVersion, originalCommit, originalDate := Version, Commit, Date
+	originalBuildInfoGetter := buildInfoGetter
+	t.Cleanup(func() {
+		Version, Commit, Date = originalVersion, originalCommit, originalDate
+		buildInfoGetter = originalBuildInfoGetter
+	})
+
+	Version, Commit, Date = defaultVersion, unknownValue, unknownValue
+	buildInfoGetter = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{
+			Main:     debug.Module{Version: "v1.0.1"},
+			Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "abc1234"}},
+		}, true
+	}
+
+	var output bytes.Buffer
+	if err := Run(context.Background(), []string{"--version"}, nil, &output, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+
+	const want = "delta v1.0.1 (commit abc1234)\n"
+	if got := output.String(); got != want {
+		t.Fatalf("version output = %q, want %q", got, want)
+	}
+}
+
 func TestResolveBuildMetadataFallsBackToGoBuildInfo(t *testing.T) {
 	info := &debug.BuildInfo{
 		Main: debug.Module{Version: "v0.4.2"},

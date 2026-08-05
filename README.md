@@ -69,12 +69,13 @@ Make sure `$(go env GOPATH)/bin` is on your `PATH`, then verify the install:
 delta --version
 ```
 
-`delta --version` reports the version, commit, and build date. Release builds receive all three values from ldflags; `go install` provides the module version, while the commit and build date remain `unknown`.
+`delta --version` reports the version, commit, and build date. Release builds receive all three values from ldflags; `go install` reports the module version and omits the commit and build date, which are not available in module-proxy builds.
 
 ## Build
 
-The Vite output is intentionally generated and ignored by git. Build the
-frontend before compiling Go so `go:embed` includes the current static assets:
+The Vite output in `web/dist` is committed so `go install` builds embed the
+frontend. When frontend sources change, rebuild before compiling Go so
+`go:embed` includes the current static assets:
 
 ```sh
 cd web
@@ -84,9 +85,6 @@ cd ..
 go build ./cmd/delta
 ```
 
-`web/dist/.gitkeep` keeps a fresh checkout buildable before the first frontend
-build. It is only a placeholder; the binary used for serving the UI should be
-compiled after `npm run build`.
 
 ## First run
 

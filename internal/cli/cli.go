@@ -39,8 +39,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return errors.New("command required; try delta init, delta serve, delta mcp, delta entry, or delta backup")
 	}
 	if args[0] == "--version" || args[0] == "version" {
-		metadata := currentBuildMetadata()
-		_, err := fmt.Fprintf(stdout, "delta %s (commit %s, %s)\n", metadata.version, metadata.commit, metadata.date)
+		_, err := fmt.Fprintln(stdout, currentBuildMetadata().describe())
 		return err
 	}
 	switch args[0] {
