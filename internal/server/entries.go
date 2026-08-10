@@ -17,13 +17,28 @@ func registerEntryRoutes(mux *http.ServeMux, svc *service.Service) {
 	mux.HandleFunc("/api/entries", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			from, to := r.URL.Query().Get("from"), r.URL.Query().Get("to")
-			entries, err := svc.ListEntries(r.Context(), from, to)
-			if err != nil {
-				writeServiceError(w, err)
-				return
+			query := r.URL.Query()
+			from, to := query.Get("from"), query.Get("to")
+			// fields=date is the projection the calendar navigation uses: full
+			// prose for every entry is megabytes the browser does not need.
+			switch fields := query.Get("fields"); fields {
+			case "":
+				entries, err := svc.ListEntries(r.Context(), from, to)
+				if err != nil {
+					writeServiceError(w, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, entries)
+			case "date":
+				dates, err := svc.ListEntryDates(r.Context(), from, to)
+				if err != nil {
+					writeServiceError(w, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, dates)
+			default:
+				writeServiceError(w, apperror.New(apperror.CodeInvalidEntry, "entries fields must be date or omitted"))
 			}
-			writeJSON(w, http.StatusOK, entries)
 		default:
 			writeServiceError(w, apperror.New(apperror.CodeMethodNotAllowed, "method not allowed"))
 		}

@@ -116,7 +116,70 @@ func TestConcurrentFirstWritesCreateOneDailySnapshot(t *testing.T) {
 	}
 }
 
-func newBackupTestService(t *testing.T, now *time.Time) (*Service, *storage.Store) {
+func TestConfiguredBackupsPathReceivesEverySnapshot(t *testing.T) {
+	now := time.Date(2026, 8, 2, 12, 34, 56, 0, time.Local)
+	directory := filepath.Join(t.TempDir(), "elsewhere", "backups")
+	svc, store := newBackupTestService(t, &now, WithBackupsPath(directory))
+	if _, err := svc.UpsertEntry(t.Context(), "2026-08-02", EntryPatch{
+		Text: OptionalString{Set: true, Value: "configured backups"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manual, err := svc.CreateBackup(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(manual.Path) != directory {
+		t.Fatalf("manual backup path = %q, want a file in %q", manual.Path, directory)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "delta-2026-08-02.db")); err != nil {
+		t.Fatalf("daily snapshot in configured directory: %v", err)
+	}
+	if _, err := os.Stat(storage.BackupDirectory(store.Path)); !os.IsNotExist(err) {
+		t.Fatalf("derived backups directory stat = %v, want not exist", err)
+	}
+}
+
+func TestSetBackupsPathMovesLaterSnapshotsAndReseedsLastBackup(t *testing.T) {
+	now := time.Date(2026, 8, 2, 12, 34, 56, 0, time.Local)
+	svc, store := newBackupTestService(t, &now)
+	if _, err := svc.CreateBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if svc.LastBackup() == nil {
+		t.Fatal("LastBackup() = nil after a manual backup")
+	}
+
+	directory := filepath.Join(t.TempDir(), "elsewhere", "backups")
+	svc.SetBackupsPath(directory)
+	if last := svc.LastBackup(); last != nil {
+		t.Fatalf("LastBackup() = %v, want none seeded from the empty new directory", last)
+	}
+	manual, err := svc.CreateBackup(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(manual.Path) != directory {
+		t.Fatalf("manual backup path = %q, want a file in %q", manual.Path, directory)
+	}
+	if _, err := svc.UpsertEntry(t.Context(), "2026-08-02", EntryPatch{
+		Text: OptionalString{Set: true, Value: "written after the switch"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "delta-2026-08-02.db")); err != nil {
+		t.Fatalf("daily snapshot in the new directory: %v", err)
+	}
+
+	// Returning to the derived directory reports the snapshot it still holds,
+	// which is what the next start would read.
+	svc.SetBackupsPath("")
+	if svc.LastBackup() == nil {
+		t.Fatalf("LastBackup() = nil, want the snapshot retained in %q", storage.BackupDirectory(store.Path))
+	}
+}
+
+func newBackupTestService(t *testing.T, now *time.Time, options ...Option) (*Service, *storage.Store) {
 	t.Helper()
 	previousNow := serviceNow
 	serviceNow = func() time.Time { return *now }
@@ -132,7 +195,7 @@ func newBackupTestService(t *testing.T, now *time.Time) (*Service, *storage.Stor
 	if err := storage.Migrate(t.Context(), store.DB); err != nil {
 		t.Fatal(err)
 	}
-	return New(store), store
+	return New(store, options...), store
 }
 
 func backupFiles(t *testing.T, store *storage.Store) []string {

@@ -103,6 +103,61 @@ func TestWorkHoursRejectsValuesOutsideTheDay(t *testing.T) {
 	}
 }
 
+func TestListEntryDatesMatchesListEntriesFilteringAndOrder(t *testing.T) {
+	svc := newEntriesTestService(t, "c5")
+	ctx := context.Background()
+	for _, date := range []string{"2026-08-03", "2026-08-01", "2026-08-05"} {
+		if _, err := svc.UpsertEntry(ctx, date, EntryPatch{Text: OptionalString{Set: true, Value: date}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, tt := range []struct {
+		name string
+		from string
+		to   string
+		want []string
+	}{
+		{name: "unbounded", want: []string{"2026-08-01", "2026-08-03", "2026-08-05"}},
+		{name: "from", from: "2026-08-03", want: []string{"2026-08-03", "2026-08-05"}},
+		{name: "to", to: "2026-08-03", want: []string{"2026-08-01", "2026-08-03"}},
+		{name: "range", from: "2026-08-02", to: "2026-08-04", want: []string{"2026-08-03"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dates, err := svc.ListEntryDates(ctx, tt.from, tt.to)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make([]string, 0, len(dates))
+			for _, date := range dates {
+				got = append(got, date.Date)
+			}
+			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Fatalf("entry dates = %v, want %v", got, tt.want)
+			}
+			entries, err := svc.ListEntries(ctx, tt.from, tt.to)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != len(dates) {
+				t.Fatalf("entries = %d, dates = %d, want the same rows", len(entries), len(dates))
+			}
+			for index := range entries {
+				if entries[index].Date != dates[index].Date {
+					t.Fatalf("row %d date = %q, want %q", index, dates[index].Date, entries[index].Date)
+				}
+			}
+		})
+	}
+
+	if _, err := svc.ListEntryDates(ctx, "2026-02-30", ""); apperror.Code(err) != apperror.CodeInvalidDate {
+		t.Fatalf("invalid from date error = %v (code %q)", err, apperror.Code(err))
+	}
+	if _, err := svc.ListEntryDates(ctx, "2026-08-05", "2026-08-01"); apperror.Code(err) != apperror.CodeInvalidDate {
+		t.Fatalf("reversed range error = %v (code %q)", err, apperror.Code(err))
+	}
+}
+
 func newEntriesTestService(t *testing.T, keyByte string) *Service {
 	t.Helper()
 	store, err := storage.Open(context.Background(), filepath.Join(t.TempDir(), "diary.db"), strings.Repeat(keyByte, storage.KeyBytes))

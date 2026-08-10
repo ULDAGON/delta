@@ -172,6 +172,30 @@ func TestMigrateStoreCreatesPreMigrationSnapshot(t *testing.T) {
 	}
 }
 
+func TestMigrateStoreWithBackupsUsesTheConfiguredDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "diary.db")
+	directory := filepath.Join(t.TempDir(), "elsewhere", "backups")
+	key := strings.Repeat("07", storage.KeyBytes)
+	store, err := storage.Open(context.Background(), path, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := storage.MigrateStoreWithBackups(context.Background(), store, directory); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := filepath.Glob(filepath.Join(directory, "pre-migrate-v0-*.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("pre-migration snapshots = %v, want one", matches)
+	}
+	if _, err := os.Stat(storage.BackupDirectory(path)); !os.IsNotExist(err) {
+		t.Fatalf("derived backups directory stat = %v, want not exist", err)
+	}
+}
+
 func TestFTSRebuildsExistingEntriesWhenMigrationRuns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "diary.db")
 	key := strings.Repeat("06", storage.KeyBytes)

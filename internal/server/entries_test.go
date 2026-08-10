@@ -233,6 +233,35 @@ func TestEntryRangeDeleteAndStableDateErrors(t *testing.T) {
 	}
 }
 
+func TestEntryListDatesProjectionReturnsOnlyDates(t *testing.T) {
+	h := api.NewTestHarness(t)
+	putJSON(t, h, "2026-08-01", map[string]any{"text": "first", "gratitudes": []string{"a", "b", "c"}})
+	putJSON(t, h, "2026-08-03", map[string]any{"text": "third"})
+
+	var dates []map[string]any
+	decodeJSON(t, entryRequest(t, h, http.MethodGet, "/api/entries?fields=date", nil), &dates)
+	if len(dates) != 2 || dates[0]["date"] != "2026-08-01" || dates[1]["date"] != "2026-08-03" {
+		t.Fatalf("entry dates = %#v, want both dates in order", dates)
+	}
+	for _, date := range dates {
+		if len(date) != 1 {
+			t.Fatalf("entry date document = %#v, want the date alone", date)
+		}
+	}
+
+	decodeJSON(t, entryRequest(t, h, http.MethodGet, "/api/entries?fields=date&from=2026-08-02&to=2026-08-03", nil), &dates)
+	if len(dates) != 1 || dates[0]["date"] != "2026-08-03" {
+		t.Fatalf("ranged entry dates = %#v, want only 2026-08-03", dates)
+	}
+
+	for _, path := range []string{"/api/entries?fields=text", "/api/entries?fields=date,text", "/api/entries?fields=DATE"} {
+		response := entryRequest(t, h, http.MethodGet, path, nil)
+		assertError(t, response, http.StatusBadRequest, "invalid_entry", "fields must be date")
+	}
+	invalidRange := entryRequest(t, h, http.MethodGet, "/api/entries?fields=date&from=2026-02-30", nil)
+	assertErrorCode(t, invalidRange, http.StatusBadRequest, "invalid_date")
+}
+
 func TestEntryPutRejectsInvalidShapesAndUndocumentedFields(t *testing.T) {
 	h := api.NewTestHarness(t)
 	tests := []struct {

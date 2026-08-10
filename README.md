@@ -2,7 +2,8 @@
 
 DELTA is a local-first, encrypted diary and habit tracker shipped as one Go
 binary. `delta serve` serves the REST API and the embedded dark, monospace web
-shell from localhost.
+shell from localhost, and from your local network as well once you turn that on
+(see [Serve on the local network](#serve-on-the-local-network)).
 
 ## A day in DELTA
 
@@ -11,6 +12,15 @@ by your day rating or your daily habit score. It is the map of your diary —
 click any pixel to open that day, including empty past days to backfill:
 
 ![The pixel grid across multiple years](docs/screenshots/grid.png)
+
+Two hold-modes reshape the grid while their key is down: `p` paints each entry's
+phase marker and lifts every journaled day off the empty base, `j` drops the
+ratings and shows only which dates carry journal text. The footer lists both.
+
+Inside an entry, `<` and `>` beside the date step to the previous and next
+entry, so a stretch of days reads without going back to the grid; in the edit
+wizard the same pair steps one day at a time. Save at the bottom right closes
+the entry — everything typed is already autosaved.
 
 Closing the day is a short guided wizard. It opens with freeform prose — write
 as much or as little as you like:
@@ -99,6 +109,15 @@ the per-machine API token needed by CLI and agent clients.
 For headless setup, `delta init --path <p>` and
 `delta init --open <p> --key-stdin` remain available.
 
+The database path and the backups folder can be changed later in Settings.
+Changing the database path copies the encrypted file to a fresh location, or
+adopts a diary already sitting there once the configured key opens it; the old
+file stays where it is either way, so a half-finished move is never the only
+copy of a diary. The new path is opened by the next start: until you restart,
+the instance keeps reading the file it already has open and refuses diary
+writes. Changing the backups folder needs no restart — the next snapshot lands
+in the new directory.
+
 ## Run in the background
 
 `delta service install` registers `delta serve` as a login service so it runs
@@ -127,6 +146,45 @@ systemctl --user disable --now delta.service
 User services stop at logout; on an always-on machine, run
 `loginctl enable-linger $USER` once to keep the service running without an
 active session.
+
+## Serve on the local network
+
+DELTA is reachable only from its own machine by default. Settings → API has a
+LAN access toggle, persisted as `lan` in `config.toml` and applied on the next
+restart. With it on, `delta serve` binds IPv4 `0.0.0.0` — an IPv4-only socket,
+never the dual-stack wildcard, so none of the machine's routable IPv6 addresses
+start answering — and Settings → API lists the `http://<lan-ip>:7331` URLs to
+open from another machine on the same network.
+
+Everything off the local network is rejected rather than served. A request is
+answered only when its peer address is loopback, link-local, or on one of the
+subnets this machine's own broadcast interfaces are attached to; a private
+address that reaches DELTA through a VPN or another tunnel is not on such a
+subnet and is refused, and tunnel addresses are never advertised as a way in
+either. The `Host` header must be localhost or an IP literal that passes the
+same test — a name never qualifies — so the diary does not leave the network
+even if the port is forwarded or a public name points at it.
+
+A browser on another machine has to log in: pages served to LAN peers carry no
+API token, and unlocking with the diary's encryption key issues a session
+cookie that idles out after 30 days of disuse and dies with the process.
+Failed logins are throttled, and the key crosses the network only during that
+login — over plain HTTP, so log in on networks you trust. The config-changing
+surfaces — revealing the key or token, regenerating the token, and changing
+the storage, backups, or LAN settings — answer only from the machine DELTA
+runs on, so even a leaked session or token cannot extract the key or repoint
+the diary from the LAN.
+
+CLI and MCP clients keep dialing the loopback `api_address` with the bearer
+token; nothing changes for them.
+
+## Colors
+
+Settings → Colors overrides the pixel palette: one color per Total rating, and
+twenty colors for the habit score, one per 5% bucket from 0–4.99% up to
+95–100%. Habit pixels are those buckets rather than a continuous gradient. The
+palette is stored in the diary, and reset-to-defaults restores the built-in
+colors.
 
 ## Frontend development
 
@@ -183,7 +241,8 @@ can also be supplied with `--date`.
 
 DELTA writes encrypted snapshots beside the live database in its `backups/`
 directory. It keeps every snapshot; there is no automatic retention or
-deletion.
+deletion. `backups_path` in `config.toml` overrides that default location and is
+editable in Settings → Backups; the next snapshot uses it, no restart needed.
 
 - The automatic daily snapshot is taken before the first mutation of the
   local calendar day, so `delta-YYYY-MM-DD.db` contains the previous day-end
@@ -194,10 +253,14 @@ deletion.
 - Before pending schema migrations, DELTA writes a
   `pre-migrate-vN-YYYYMMDD-HHMMSS.db` snapshot.
 
-To restore, stop DELTA first. Use the open-existing setup flow with the
-snapshot path and the same encryption key, or point Settings at the snapshot.
-To replace the live diary, copy the chosen snapshot over the live database
-file while DELTA is stopped, then start DELTA again.
+To restore, either adopt the snapshot where it lies or replace the live file.
+Pointing Settings → Storage at the snapshot adopts it: DELTA checks that the
+file opens with the configured key, repoints `config.toml` at it without copying
+anything, and refuses diary writes until you restart — from that restart on, the
+snapshot is the live diary and takes every new write. To keep the live path
+instead, stop DELTA, copy the chosen snapshot over the live database file, and
+start DELTA again. On a machine with no config yet, the open-existing setup flow
+takes the snapshot path and the same encryption key.
 
 ## MCP
 

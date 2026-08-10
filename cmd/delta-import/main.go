@@ -69,10 +69,10 @@ func run(command string, args []string) error {
 		return err
 	}
 	defer store.Close()
-	if err := storage.MigrateStore(ctx, store); err != nil {
+	if err := storage.MigrateStoreWithBackups(ctx, store, c.BackupsPath); err != nil {
 		return err
 	}
-	svc := service.New(store)
+	svc := service.New(store, service.WithBackupsPath(c.BackupsPath))
 	fmt.Println("database:", store.Path)
 
 	backup, err := svc.CreateBackup(ctx)

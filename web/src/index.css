@@ -20,6 +20,10 @@
   --rating-3: #ffc93c;
   --rating-4: #9be15d;
   --rating-5: var(--good);
+  /* Phase markers carry their own tokens: a saved rating palette overwrites
+     --rating-*, and a marker labelled orange must stay orange. */
+  --phase-1: #00e676;
+  --phase-2: #ff7849;
   --wd: 26px;
   --gap: 2px;
   --fs: 12px;
@@ -1106,6 +1110,7 @@ input:focus-visible {
 .settings-panel-footer {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   margin-top: 12px;
 }
 
@@ -1431,6 +1436,59 @@ input:focus-visible {
   color: var(--fg);
 }
 
+.settings-color-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  background: var(--card);
+}
+
+.settings-color-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.settings-color-swatch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  color: var(--dim);
+}
+
+.settings-color-swatch input {
+  width: 56px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: none;
+  cursor: pointer;
+}
+
+/* The native swatch keeps a rounded inset in WebKit, which breaks the square
+   pixel language of the grid it is configuring. */
+.settings-color-swatch input::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.settings-color-swatch input::-webkit-color-swatch {
+  border: 0;
+  border-radius: 0;
+}
+
+.settings-lan-urls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-lan-urls code {
+  color: var(--fg);
+}
+
 .status-bar {
   position: fixed;
   right: 0;
@@ -1535,6 +1593,30 @@ kbd {
   padding: 0;
 }
 
+/* Prev/next arrows beside a date: the wizard steps calendar days, the read
+   popup hops between existing entries. */
+.date-nav {
+  display: inline-flex;
+  align-self: center;
+  gap: 2px;
+}
+
+.date-nav button {
+  padding: 1px 5px;
+  border: 0;
+  background: none;
+  color: var(--dim);
+}
+
+.date-nav button:hover:not(:disabled) {
+  color: var(--acc);
+}
+
+.date-nav button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
 .wizard-pixel {
   width: 14px;
   height: 14px;
@@ -1551,11 +1633,11 @@ kbd {
 }
 
 .wizard-pixel-1 {
-  background: var(--good);
+  background: var(--phase-1);
 }
 
 .wizard-pixel-2 {
-  background: var(--rating-2);
+  background: var(--phase-2);
 }
 
 .wizard-date-button:hover {
@@ -2312,6 +2394,10 @@ kbd {
   .wizard-hint {
     width: 100%;
     margin-left: 0;
+  }
+
+  .wizard-footer-save {
+    margin-left: auto;
   }
 
   .date-picker {

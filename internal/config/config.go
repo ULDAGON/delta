@@ -29,9 +29,16 @@ var configWriteMu sync.Mutex
 
 type Config struct {
 	DatabasePath string
-	Key          string
-	APIToken     string
-	APIAddress   string
+	// BackupsPath is optional: an empty value keeps snapshots in the directory
+	// derived beside the database.
+	BackupsPath string
+	Key         string
+	APIToken    string
+	APIAddress  string
+	// Lan opts into serving the diary to the local network. It is persisted as
+	// a quoted "true"/"false" because every config value is read through
+	// strconv.Unquote.
+	Lan bool
 }
 
 func Path() (string, error) {
@@ -146,7 +153,7 @@ func LoadAt(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
-	c := Config{DatabasePath: values["database_path"], Key: storage.NormalizeKey(values["key"]), APIToken: values["api_token"], APIAddress: values["api_address"]}
+	c := Config{DatabasePath: values["database_path"], BackupsPath: values["backups_path"], Key: storage.NormalizeKey(values["key"]), APIToken: values["api_token"], APIAddress: values["api_address"], Lan: values["lan"] == "true"}
 	if c.APIAddress == "" {
 		c.APIAddress = DefaultAPIAddress
 	}
@@ -158,6 +165,11 @@ func LoadAt(path string) (Config, error) {
 	}
 	if c.DatabasePath, err = expandHome(c.DatabasePath); err != nil {
 		return Config{}, err
+	}
+	if c.BackupsPath != "" {
+		if c.BackupsPath, err = expandHome(c.BackupsPath); err != nil {
+			return Config{}, err
+		}
 	}
 	return c, nil
 }
@@ -307,9 +319,11 @@ func atomicWrite(path, contents string) (err error) {
 func format(c Config) string {
 	return "# DELTA per-machine configuration\n" +
 		"database_path = " + strconv.Quote(c.DatabasePath) + "\n" +
+		"backups_path = " + strconv.Quote(c.BackupsPath) + "\n" +
 		"key = " + strconv.Quote(storage.NormalizeKey(c.Key)) + "\n" +
 		"api_token = " + strconv.Quote(c.APIToken) + "\n" +
-		"api_address = " + strconv.Quote(c.APIAddress) + "\n"
+		"api_address = " + strconv.Quote(c.APIAddress) + "\n" +
+		"lan = " + strconv.Quote(strconv.FormatBool(c.Lan)) + "\n"
 }
 
 func expandHome(path string) (string, error) {

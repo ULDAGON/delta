@@ -198,6 +198,9 @@ func TestEmbeddedFrontendContainsDistPlaceholder(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/", nil)
+	// The token only ships to the machine itself; NewRequest's default peer
+	// is a public TEST-NET address.
+	request.RemoteAddr = "127.0.0.1:52001"
 	server.NewHandler(nil, "test-token", server.WithFrontendFS(files)).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("frontend status = %d, want 200", recorder.Code)

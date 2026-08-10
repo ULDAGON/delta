@@ -32,7 +32,7 @@ func TestConcurrentRegeneratesLeaveLiveAndPersistedTokensAligned(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := &authState{token: value.APIToken}
-	state := newSettingsState(service.New(store), value.APIToken, &value, auth)
+	state := newSettingsState(service.New(store), value.APIToken, &value, auth, &restartState{}, false)
 
 	type result struct {
 		token string
@@ -46,6 +46,7 @@ func TestConcurrentRegeneratesLeaveLiveAndPersistedTokensAligned(t *testing.T) {
 			defer group.Done()
 			recorder := httptest.NewRecorder()
 			request := httptest.NewRequest(http.MethodPost, "/api/settings/token/regenerate", nil)
+			request.RemoteAddr = "127.0.0.1:52002"
 			state.handleRegenerate(recorder, request)
 			var response tokenRegenerateResponse
 			if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {

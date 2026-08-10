@@ -15,6 +15,7 @@ const (
 	CodeInvalidHabit      = "invalid_habit"
 	CodeInvalidGrid       = "invalid_grid"
 	CodeInvalidStats      = "invalid_stats"
+	CodeInvalidUIColors   = "invalid_ui_colors"
 	CodeNotFound          = "not_found"
 	CodeUpgrade           = "upgrade_required"
 	CodeInternalError     = "internal_error"
@@ -25,6 +26,9 @@ const (
 	CodeDatabaseNotFound  = "database_not_found"
 	CodeInvalidSetup      = "invalid_setup"
 	CodeServerUnavailable = "server_unavailable"
+	CodeRestartRequired   = "restart_required"
+	CodeLoopbackOnly      = "loopback_only"
+	CodeRateLimited       = "rate_limited"
 
 	WrongKeyMessage = "wrong key or not a DELTA file — check the key in your password manager"
 )

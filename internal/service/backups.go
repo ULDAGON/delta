@@ -21,13 +21,24 @@ type BackupResult struct {
 }
 
 type backupManager struct {
-	store *storage.Store
-	mu    sync.Mutex
-	daily map[string]bool
+	store     *storage.Store
+	directory string
+	mu        sync.Mutex
+	daily     map[string]bool
 }
 
-func newBackupManager(store *storage.Store) *backupManager {
-	return &backupManager{store: store, daily: make(map[string]bool)}
+func newBackupManager(store *storage.Store, directory string) *backupManager {
+	return &backupManager{store: store, directory: directory, daily: make(map[string]bool)}
+}
+
+// setDirectory sends later snapshots to another directory. The daily markers
+// are dropped with it: today's snapshot exists per directory, so the new one
+// must still receive one before the next write is accepted.
+func (m *backupManager) setDirectory(directory string) {
+	m.mu.Lock()
+	m.directory = directory
+	m.daily = make(map[string]bool)
+	m.mu.Unlock()
 }
 
 // CreateBackup makes the user-requested snapshot. It shares the same
@@ -52,7 +63,7 @@ func (m *backupManager) dailySnapshot(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
-	destination := filepath.Join(storage.BackupDirectory(m.store.Path), "delta-"+date+".db")
+	destination := filepath.Join(m.directory, "delta-"+date+".db")
 	if _, err := os.Stat(destination); err == nil {
 		m.daily[date] = true
 		return false, nil
@@ -73,8 +84,7 @@ func (m *backupManager) manual(ctx context.Context) (BackupResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	directory := storage.BackupDirectory(m.store.Path)
-	base := filepath.Join(directory, "delta-"+date+".db")
+	base := filepath.Join(m.directory, "delta-"+date+".db")
 	destination, err := availableManualDestination(base, now)
 	if err != nil {
 		return BackupResult{}, err

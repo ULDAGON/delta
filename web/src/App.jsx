@@ -7,13 +7,15 @@ const NAV_ITEMS = [
   { id: "stats", label: "Stats" },
   { id: "settings", label: "Settings" },
 ];
-const SETTINGS_SECTIONS = ["habits", "storage", "api", "backups"];
+const SETTINGS_SECTIONS = ["habits", "colors", "storage", "api", "backups"];
 
 const WEEKDAYS = ["Mo", "", "We", "", "Fr", "", ""];
 const PICKER_WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const PIXEL_LABELS = ["grey", "green", "orange"];
-const PIXEL_COLORS = [undefined, "var(--good)", "var(--rating-2)"];
+// Phase markers read their own tokens, never the rating palette: recolouring
+// rating 2 must not repaint a marker whose label still says orange.
+const PIXEL_COLORS = [undefined, "var(--phase-1)", "var(--phase-2)"];
 
 function pageFromHash() {
   return pageForHash(window.location.hash.slice(1));
@@ -357,6 +359,12 @@ function nextDateKey(key) {
   return formatDate(date);
 }
 
+function previousDateKey(key) {
+  const date = parseDateKey(key);
+  date.setDate(date.getDate() - 1);
+  return formatDate(date);
+}
+
 function localClock() {
   const now = new Date();
   return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
@@ -553,7 +561,17 @@ function PopupRating({ label, value }) {
   );
 }
 
-function EntryPopup({ date, onClose, onEdit, onDeleted }) {
+// The API lists entry dates ascending, so the neighbours of a date are the last
+// recorded date before it and the first one after it. A null list (not loaded)
+// yields no neighbours at all.
+function adjacentEntryDates(dates, date) {
+  if (!dates) return { previous: null, next: null };
+  const earlier = dates.filter((item) => item < date);
+  const later = dates.filter((item) => item > date);
+  return { previous: earlier[earlier.length - 1] || null, next: later[0] || null };
+}
+
+function EntryPopup({ date, onClose, onEdit, onDeleted, onNavigate }) {
   const [entry, setEntry] = useState(null);
   const [habits, setHabits] = useState([]);
   const [habitsOpen, setHabitsOpen] = useState(false);
@@ -564,6 +582,21 @@ function EntryPopup({ date, onClose, onEdit, onDeleted }) {
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [deleting, setDeleting] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [entryDates, setEntryDates] = useState(null);
+
+  // Fetched once per mount: the popup stays mounted while date changes, and the
+  // arrows only need the dates that existed when it opened. Only the dates are
+  // requested — the full diary is megabytes of prose the arrows never read. A
+  // failed list leaves both arrows disabled instead of masking the entry itself.
+  useEffect(() => {
+    let active = true;
+    apiJSON("/api/entries?fields=date")
+      .then((body) => {
+        if (active) setEntryDates((Array.isArray(body) ? body : []).map((item) => item.date));
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     if (!copied) return;
@@ -575,6 +608,11 @@ function EntryPopup({ date, onClose, onEdit, onDeleted }) {
     let active = true;
     setLoading(true);
     setError("");
+    // The previous date's entry is dropped before the fetch: Export and Delete
+    // act on `entry`, so a slow or failed load must not leave them pointing at
+    // the date the user just navigated away from.
+    setEntry(null);
+    setCopied(false);
     apiJSON(`/api/entries/${date}`)
       .then((body) => {
         if (active) setEntry(normalizeEntry(body, date));
@@ -648,6 +686,7 @@ function EntryPopup({ date, onClose, onEdit, onDeleted }) {
   const checkedGoals = entry?.goals.filter((goal) => goal.checked).length || 0;
   const habitTotal = habitsLoading ? "…" : activeHabits.length;
   const characterCount = entry ? Array.from(entry.text).length : 0;
+  const { previous: previousEntryDate, next: nextEntryDate } = adjacentEntryDates(entryDates, date);
 
   // The backdrop carries no click handler on purpose: Escape and the Close
   // button are the only ways out, so a stray click never drops the popup.
@@ -656,7 +695,15 @@ function EntryPopup({ date, onClose, onEdit, onDeleted }) {
       <div aria-label={`Entry for ${date}`} aria-modal="true" className="wizard-modal entry-popup-modal" role="dialog">
         <div className="entry-popup-body">
           <aside className="entry-popup-left">
-            <div className="entry-popup-date-line"><EntryPixel rating={entry?.ratings?.total} /><span className="entry-popup-date">{date}</span><span className="entry-popup-weekday">{weekdayForDate(date)}</span></div>
+            <div className="entry-popup-date-line">
+              <EntryPixel rating={entry?.ratings?.total} />
+              <span className="date-nav">
+                <button aria-label="Previous entry" disabled={!previousEntryDate} onClick={() => onNavigate(previousEntryDate)} type="button">&lt;</button>
+                <button aria-label="Next entry" disabled={!nextEntryDate} onClick={() => onNavigate(nextEntryDate)} type="button">&gt;</button>
+              </span>
+              <span className="entry-popup-date">{date}</span>
+              <span className="entry-popup-weekday">{weekdayForDate(date)}</span>
+            </div>
             {loading && <p className="wizard-muted">loading entry…</p>}
             {!loading && error && (
               <>
@@ -1277,6 +1324,10 @@ function EntryWizard({ initialDate, onClose }) {
           <aside className="wizard-nav">
             <div className="wizard-date-row">
               <EntryPixel rating={entry.ratings.total} />
+              <span className="date-nav">
+                <button aria-label="Previous day" onClick={() => selectDate(previousDateKey(date))} type="button">&lt;</button>
+                <button aria-label="Next day" onClick={() => selectDate(nextDateKey(date))} type="button">&gt;</button>
+              </span>
               <button className="wizard-date-button" onClick={openPicker} type="button">{date}</button>
               <button
                 aria-label={`Pixel marker: ${PIXEL_LABELS[entry.pixel] || "grey"}`}
@@ -1300,6 +1351,7 @@ function EntryWizard({ initialDate, onClose }) {
           {step > 0 && <button className="wizard-button" onClick={() => setStep((current) => current - 1)} type="button">← Back</button>}
           {step < WIZARD_STEPS.length - 1 && <Button className="wizard-button primary" onClick={() => setStep((current) => current + 1)} type="button">Next →</Button>}
           <span className="wizard-hint">click any step to jump · click the date to backfill · <kbd>esc</kbd> close</span>
+          <Button className="wizard-button primary wizard-footer-save" disabled={saving} onClick={closeWizard} type="button">Save</Button>
         </div>
       </div>
     </div>
@@ -1360,7 +1412,7 @@ function pixelClass(day, view) {
 // A day carrying a journal but no metric for the current view still reads as
 // written-on, so it lifts off the empty base instead of looking untouched.
 function journalOnlyClass(day) {
-  return day.journal ? "px-journal" : undefined;
+  return day?.journal ? "px-journal" : undefined;
 }
 
 function ratingRampClass(value) {
@@ -1377,20 +1429,61 @@ function EntryPixel({ rating }) {
   return <span aria-hidden="true" className={`entry-pixel${ramp ? ` ${ramp}` : ""}`} />;
 }
 
-function continuousRampColor(percent) {
-  const clamped = Math.max(0, Math.min(100, percent));
-  return `hsl(${clamped * 1.45}, 85%, 55%)`;
+const HABIT_BUCKET_COUNT = 20;
+const RATING_LEVELS = ["1", "2", "3", "4", "5"];
+const DEFAULT_RATING_COLORS = { 1: "#ff3b5c", 2: "#ff7849", 3: "#ffc93c", 4: "#9be15d", 5: "#00e676" };
+// The buckets start out as the continuous ramp they replaced, sampled at each
+// bucket's midpoint, so an unsaved palette reads exactly as it did before.
+const DEFAULT_HABIT_COLORS = Array.from({ length: HABIT_BUCKET_COUNT }, (_, bucket) => hslToHex((bucket * 5 + 2.5) * 1.45, 0.85, 0.55));
+
+function hslToHex(hue, saturation, lightness) {
+  const amplitude = saturation * Math.min(lightness, 1 - lightness);
+  function channel(offset) {
+    const turn = (offset + hue / 30) % 12;
+    const value = lightness - amplitude * Math.max(-1, Math.min(turn - 3, 9 - turn, 1));
+    return Math.round(value * 255).toString(16).padStart(2, "0");
+  }
+  return `#${channel(0)}${channel(8)}${channel(4)}`;
 }
 
-function pixelColor(day, view) {
+// A stored palette is only honoured when it still has one colour per bucket;
+// anything else falls back whole rather than mixing two ramps.
+function habitPalette(colors) {
+  const habits = colors?.habits;
+  return Array.isArray(habits) && habits.length === HABIT_BUCKET_COUNT ? habits : DEFAULT_HABIT_COLORS;
+}
+
+// Buckets are half-open, so their labels must not share an edge: every bucket
+// but the last stops just short of the next one, and the last one owns 100%.
+function habitBucketLabel(bucket) {
+  const start = bucket * 5;
+  return bucket === HABIT_BUCKET_COUNT - 1 ? "95–100%" : `${start}–${start + 4}.99%`;
+}
+
+function habitBucketColor(percent, habitColors) {
+  const bucket = Math.max(0, Math.min(HABIT_BUCKET_COUNT - 1, Math.floor(percent / 5)));
+  return (habitColors || DEFAULT_HABIT_COLORS)[bucket];
+}
+
+function pixelColor(day, view, habitColors) {
   if (view === "habit" && day?.has_entry && day.habit_score != null) {
-    return continuousRampColor(day.habit_score);
+    return habitBucketColor(day.habit_score, habitColors);
   }
   return undefined;
 }
 
 function markerColor(day) {
   return PIXEL_COLORS[day?.pixel] || undefined;
+}
+
+// The two hold-modes replace the view's ramp rather than layering on it: j
+// reduces the grid to journaled days — has_entry is too wide here, since
+// imported values give nearly every day an entry without any journal text —
+// and p paints phase colours over days that still lift for their journal.
+function gridPixel(day, view, { entriesOnly, habitColors, marker }) {
+  if (entriesOnly) return { className: journalOnlyClass(day) };
+  if (marker) return { className: journalOnlyClass(day), color: markerColor(day) };
+  return { className: pixelClass(day, view), color: pixelColor(day, view, habitColors) };
 }
 
 function formatMetric(value, suffix = "") {
@@ -1424,7 +1517,7 @@ function DayTooltip({ day, position }) {
 const GRID_WEEKDAY_WIDTH = 26;
 const GRID_GAP = 2;
 
-function PixelGrid({ year, view, days = [], marker = false, onOpen }) {
+function PixelGrid({ year, view, days = [], entriesOnly = false, habitColors, marker = false, onOpen }) {
   const { cells, monthMarks, weeks } = useMemo(() => calendarFor(year), [year]);
   const today = formatDate(new Date());
   const [measureRef, width] = useMeasuredWidth();
@@ -1478,8 +1571,7 @@ function PixelGrid({ year, view, days = [], marker = false, onOpen }) {
         {cells.map(({ inYear, key }) => {
           const day = daysByDate.get(key);
           const tooltipDay = inYear ? (key > today ? { date: key, future: true } : day) : null;
-          const color = marker ? markerColor(day) : pixelColor(day, view);
-          const className = marker ? undefined : pixelClass(day, view);
+          const { className, color } = gridPixel(day, view, { entriesOnly, habitColors, marker });
           return (
           <button
             aria-label={inYear ? key : "outside selected year"}
@@ -1629,7 +1721,7 @@ function SearchDropdown({ onOpen, inputRef }) {
 // view toggle while this page is unmounted. Every recorded year renders as
 // its own grid, newest on top; only the App-year grid comes preloaded, the
 // rest are fetched here.
-function GridPage({ year, onOpen, grid, error, view, setView, marker, searchInputRef, gridRefresh }) {
+function GridPage({ year, onOpen, grid, error, view, setView, entriesOnly, habitColors, marker, searchInputRef, gridRefresh }) {
   const years = useMemo(() => [...(grid?.years || [year])].sort((a, b) => b - a), [grid, year]);
   const yearsKey = years.join(",");
   const [extraDays, setExtraDays] = useState({});
@@ -1678,6 +1770,8 @@ function GridPage({ year, onOpen, grid, error, view, setView, marker, searchInpu
             <h2 className="year-grid-label">{item}</h2>
             <PixelGrid
               days={item === year ? grid?.days : extraDays[item]}
+              entriesOnly={entriesOnly}
+              habitColors={habitColors}
               marker={marker}
               onOpen={onOpen}
               view={view}
@@ -1690,16 +1784,16 @@ function GridPage({ year, onOpen, grid, error, view, setView, marker, searchInpu
   );
 }
 
-function statColor(value, min = 0, max = 100) {
+function statColor(value, min = 0, max = 100, habitColors) {
   if (value == null) return undefined;
   const percent = Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
-  return continuousRampColor(percent);
+  return habitBucketColor(percent, habitColors);
 }
 
-function StatsBar({ label, value, min = 0, max = 100, display, fillClass }) {
+function StatsBar({ label, value, min = 0, max = 100, display, fillClass, habitColors }) {
   const width = value == null ? 0 : Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
   const fillStyle = { width: `${width}%` };
-  if (!fillClass) fillStyle.backgroundColor = statColor(value, min, max);
+  if (!fillClass) fillStyle.backgroundColor = statColor(value, min, max, habitColors);
   return (
     <div className="stats-bar">
       <span className="stats-bar-label">{label}</span>
@@ -1861,7 +1955,7 @@ function StatsViewToggle({ view, setView }) {
   );
 }
 
-function StatsPage({ year, setYear }) {
+function StatsPage({ habitColors, year, setYear }) {
   const [stats, setStats] = useState(null);
   const [error, setError] = useState("");
   const [chartView, setChartView] = useState("table");
@@ -1935,7 +2029,7 @@ function StatsPage({ year, setYear }) {
           <h2>habit completion · {year}</h2>
           <div className="stats-bars">
             {completion.length === 0 ? <span className="stats-empty">no habits</span> : completion.map((habit) => (
-              <StatsBar key={habit.id} label={habit.name} value={habit.percent} display={`${Math.round(habit.percent)}%`} />
+              <StatsBar key={habit.id} habitColors={habitColors} label={habit.name} value={habit.percent} display={`${Math.round(habit.percent)}%`} />
             ))}
           </div>
         </section>
@@ -1955,7 +2049,7 @@ function StatsPage({ year, setYear }) {
             <h2>average habit score · {year}</h2>
             {chartView === "graph" ? <MonthLineChart format={formatPercent} label={`average habit score by month, ${year}`} points={habitScore} /> : (
               <div className="stats-bars">
-                {habitScore.map((point) => <StatsBar key={point.month} label={monthLabel(point.month)} value={point.value} display={point.value == null ? "—" : formatPercent(point.value)} />)}
+                {habitScore.map((point) => <StatsBar key={point.month} habitColors={habitColors} label={monthLabel(point.month)} value={point.value} display={point.value == null ? "—" : formatPercent(point.value)} />)}
               </div>
             )}
           </section>
@@ -2001,7 +2095,21 @@ function formatHabitRanges(habit) {
   return (habit.ranges || []).map((range) => `${range.active_from} → ${range.active_to || "…"}`).join(" · ");
 }
 
-function SettingsPage({ navigate, section, onActiveHabitCountChange, onLastBackupChange }) {
+function colorDraftFrom(colors) {
+  return {
+    ratings: { ...DEFAULT_RATING_COLORS, ...(colors?.ratings || {}) },
+    habits: habitPalette(colors),
+  };
+}
+
+function colorPayload(draft) {
+  return {
+    ratings: Object.fromEntries(RATING_LEVELS.map((level) => [level, draft.ratings[level]])),
+    habits: draft.habits,
+  };
+}
+
+function SettingsPage({ navigate, section, onActiveHabitCountChange, onColorsChange, onLastBackupChange }) {
   const [habits, setHabits] = useState([]);
   const [newHabitName, setNewHabitName] = useState("");
   const [editingHabitId, setEditingHabitId] = useState(null);
@@ -2019,8 +2127,17 @@ function SettingsPage({ navigate, section, onActiveHabitCountChange, onLastBacku
   const [revealedSecrets, setRevealedSecrets] = useState({ key: null, token: null });
   const [editingKey, setEditingKey] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
+  const [editingDatabasePath, setEditingDatabasePath] = useState(false);
+  const [databasePathDraft, setDatabasePathDraft] = useState("");
+  const [editingBackupsPath, setEditingBackupsPath] = useState(false);
+  const [backupsPathDraft, setBackupsPathDraft] = useState("");
+  const [colorDraft, setColorDraft] = useState(() => colorDraftFrom(null));
+  // Until the stored palette has actually arrived the draft is the built-in
+  // default, so saving it would overwrite the user's palette with defaults.
+  const [colorsLoaded, setColorsLoaded] = useState(false);
   const [settingsMessage, setSettingsMessage] = useState("");
   const [confirmRegenerate, setConfirmRegenerate] = useState(false);
+  const [confirmLAN, setConfirmLAN] = useState(false);
 
   function setHabitList(nextHabits) {
     const list = Array.isArray(nextHabits) ? nextHabits : [];
@@ -2043,6 +2160,13 @@ function SettingsPage({ navigate, section, onActiveHabitCountChange, onLastBacku
     return nextSettings;
   }
 
+  async function refreshColors(signal) {
+    const nextColors = await apiRequest("/api/settings/colors", signal ? { signal } : {});
+    setColorDraft(colorDraftFrom(nextColors));
+    setColorsLoaded(true);
+    return nextColors;
+  }
+
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
@@ -2051,11 +2175,17 @@ function SettingsPage({ navigate, section, onActiveHabitCountChange, onLastBacku
     setRevealedSecrets({ key: null, token: null });
     setEditingKey(false);
     setKeyDraft("");
+    setEditingDatabasePath(false);
+    setDatabasePathDraft("");
+    setEditingBackupsPath(false);
+    setBackupsPathDraft("");
+    setColorsLoaded(false);
     setConfirmRegenerate(false);
+    setConfirmLAN(false);
     // Per-action feedback belongs to the tab that produced it; leaving the tab
     // (or the page, which unmounts this component) drops it.
     setSettingsMessage("");
-    Promise.all([refreshHabits(controller.signal), refreshSettings(controller.signal)])
+    Promise.all([refreshHabits(controller.signal), refreshSettings(controller.signal), refreshColors(controller.signal)])
       .catch((requestError) => {
         if (requestError.name !== "AbortError") setError(requestError);
       })
@@ -2136,8 +2266,12 @@ function SettingsPage({ navigate, section, onActiveHabitCountChange, onLastBacku
     }
   }
 
-  async function saveKey() {
-    if (saving) return;
+  // Reports whether the PATCH landed so each caller can close its own editor
+  // only on success and leave the draft in place otherwise. A message may be a
+  // function of the response: what a database path change actually did is only
+  // known from the flags the server sends back.
+  async function patchSettings(payload, message) {
+    if (saving) return false;
     setSaving(true);
     setError(null);
     setSettingsMessage("");
@@ -2145,14 +2279,113 @@ function SettingsPage({ navigate, section, onActiveHabitCountChange, onLastBacku
       const response = await apiRequest("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: keyDraft }),
+        body: JSON.stringify(payload),
       });
       setSettingsInfo(response.settings);
       onLastBackupChange(response.settings?.last_backup || "");
-      setRevealedSecrets((current) => ({ ...current, key: null }));
-      setEditingKey(false);
-      setKeyDraft("");
-      setSettingsMessage("saved — restart DELTA to open with the new key");
+      setSettingsMessage(typeof message === "function" ? message(response) : message);
+      return true;
+    } catch (requestError) {
+      setError(requestError);
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveKey() {
+    if (!(await patchSettings({ key: keyDraft }, "saved — restart DELTA to open with the new key"))) return;
+    setRevealedSecrets((current) => ({ ...current, key: null }));
+    setEditingKey(false);
+    setKeyDraft("");
+  }
+
+  function cancelKeyEdit() {
+    setEditingKey(false);
+    setKeyDraft("");
+    setRevealedSecrets((current) => ({ ...current, key: null }));
+  }
+
+  function startDatabasePathEdit() {
+    setError(null);
+    setDatabasePathDraft(settingsInfo?.database_path || "");
+    setEditingDatabasePath(true);
+  }
+
+  function databasePathMessage(response) {
+    if (response.database_moved) return "database copied — DELTA is read-only until you restart it (the old file stays behind)";
+    if (response.database_adopted) return "now pointing at the existing database — DELTA is read-only until you restart it";
+    return "database path unchanged";
+  }
+
+  async function saveDatabasePath() {
+    if (!(await patchSettings({ database_path: databasePathDraft }, databasePathMessage))) return;
+    setEditingDatabasePath(false);
+    setDatabasePathDraft("");
+  }
+
+  function cancelDatabasePathEdit() {
+    setEditingDatabasePath(false);
+    setDatabasePathDraft("");
+  }
+
+  // The draft starts from the configured value, not the resolved one: seeding it
+  // with the folder derived beside the database would pin that derivation into
+  // config.toml, where it stops following a later database move.
+  function startBackupsPathEdit() {
+    setError(null);
+    setBackupsPathDraft(settingsInfo?.backups_path_configured || "");
+    setEditingBackupsPath(true);
+  }
+
+  // An emptied field is a real value here: the API reads "" as "back to the
+  // folder beside the database".
+  async function saveBackupsPath() {
+    if (!(await patchSettings({ backups_path: backupsPathDraft }, "saved — snapshots go to this folder from now on"))) return;
+    setEditingBackupsPath(false);
+    setBackupsPathDraft("");
+  }
+
+  function cancelBackupsPathEdit() {
+    setEditingBackupsPath(false);
+    setBackupsPathDraft("");
+  }
+
+  async function toggleLAN() {
+    if (saving) return;
+    if (!confirmLAN) {
+      setConfirmLAN(true);
+      return;
+    }
+    setConfirmLAN(false);
+    await patchSettings({ lan: !settingsInfo?.lan }, "saved — restart DELTA to apply");
+  }
+
+  function updateRatingColor(level, color) {
+    setColorDraft((current) => ({ ...current, ratings: { ...current.ratings, [level]: color } }));
+  }
+
+  function updateHabitColor(bucket, color) {
+    setColorDraft((current) => ({
+      ...current,
+      habits: current.habits.map((value, index) => (index === bucket ? color : value)),
+    }));
+  }
+
+  async function saveColors() {
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    setSettingsMessage("");
+    try {
+      const stored = await apiRequest("/api/settings/colors", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(colorPayload(colorDraft)),
+      });
+      onColorsChange(stored);
+      setColorDraft(colorDraftFrom(stored));
+      setSettingsMessage("colors saved");
     } catch (requestError) {
       setError(requestError);
     } finally {
@@ -2160,10 +2393,31 @@ function SettingsPage({ navigate, section, onActiveHabitCountChange, onLastBacku
     }
   }
 
-  function cancelKeyEdit() {
-    setEditingKey(false);
-    setKeyDraft("");
-    setRevealedSecrets((current) => ({ ...current, key: null }));
+  async function resetColors() {
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    setSettingsMessage("");
+    try {
+      await apiRequest("/api/settings/colors", { method: "DELETE" });
+      onColorsChange(null);
+      setColorDraft(colorDraftFrom(null));
+      setSettingsMessage("colors reset to defaults");
+    } catch (requestError) {
+      setError(requestError);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // A reload after logout lands on the login screen: the cookie is gone and
+  // the page carries no token.
+  async function logoutBrowser() {
+    try {
+      await apiRequest("/api/logout", { method: "POST" });
+    } finally {
+      window.location.reload();
+    }
   }
 
   async function regenerateToken() {
@@ -2528,7 +2782,15 @@ function SettingsPage({ navigate, section, onActiveHabitCountChange, onLastBacku
         <div className="settings-kv-list">
           <div className="settings-kv">
             <span className="settings-kv-label">database path</span><span className="settings-kv-dots" />
-            <code className="settings-kv-value">{settingsValue("database_path")}</code>
+            {editingDatabasePath ? (
+              <input className="settings-secret-input" aria-label="Database path" onChange={(event) => setDatabasePathDraft(event.target.value)} spellCheck="false" value={databasePathDraft} />
+            ) : <code className="settings-kv-value">{settingsValue("database_path")}</code>}
+            {editingDatabasePath ? (
+              <>
+                <button className="settings-action-button primary" disabled={saving} onClick={() => void saveDatabasePath()} type="button">save</button>
+                <button className="settings-action-button" disabled={saving} onClick={cancelDatabasePathEdit} type="button">cancel</button>
+              </>
+            ) : <button className="settings-action-button" disabled={!settingsInfo || saving} onClick={startDatabasePathEdit} type="button">edit</button>}
           </div>
           <div className="settings-kv settings-kv-secret">
             <span className="settings-kv-label">encryption key</span><span className="settings-kv-dots" />
@@ -2550,6 +2812,11 @@ function SettingsPage({ navigate, section, onActiveHabitCountChange, onLastBacku
   }
 
   function apiPanel() {
+    const lanOn = Boolean(settingsInfo?.lan);
+    // The listener stays loopback-bound until the process restarts, so a freshly
+    // enabled LAN is configured but not yet serving those addresses.
+    const lanActive = Boolean(settingsInfo?.lan_active);
+    const lanURLs = settingsInfo?.lan_urls || [];
     return (
       <>
         <div className="settings-panel-heading"><h2>API</h2></div>
@@ -2565,8 +2832,28 @@ function SettingsPage({ navigate, section, onActiveHabitCountChange, onLastBacku
             <button className="settings-action-button" disabled={!settingsInfo} onClick={() => void toggleSecret("token")} type="button">{revealedSecrets.token ? "hide" : "show"}</button>
             <CopyButton className="settings-action-button" disabled={!settingsInfo} onError={setError} value={() => copySecret("token")} />
           </div>
+          <div className="settings-kv">
+            <span className="settings-kv-label">LAN access</span><span className="settings-kv-dots" />
+            <code className="settings-kv-value">{settingsInfo ? (lanOn ? "on" : "off") : "—"}</code>
+            {confirmLAN ? (
+              <span className="settings-confirm" role="alert">
+                <span>{lanOn ? "Stop serving to other devices?" : "Serve the diary to every device on this local network?"}</span>
+                <button className="settings-action-button danger" disabled={saving} onClick={() => void toggleLAN()} type="button">{lanOn ? "confirm turn off" : "confirm turn on"}</button>
+                <button className="settings-action-button" disabled={saving} onClick={() => setConfirmLAN(false)} type="button">cancel</button>
+              </span>
+            ) : <button className="settings-action-button" disabled={!settingsInfo || saving} onClick={() => void toggleLAN()} type="button">{lanOn ? "turn off" : "turn on"}</button>}
+          </div>
         </div>
+        {lanOn && (
+          <div className="settings-lan-urls">
+            <span className="section-label">{lanActive ? "reachable at" : "after a restart, reachable at"}</span>
+            {lanURLs.length === 0
+              ? <p className="settings-muted">no private network address on this machine yet.</p>
+              : lanURLs.map((url) => <code key={url}>{url}</code>)}
+          </div>
+        )}
         <div className="settings-panel-footer">
+          {!window.__DELTA_TOKEN__ && <button className="settings-action-button" disabled={saving} onClick={() => void logoutBrowser()} type="button">Log out this browser</button>}
           {confirmRegenerate ? (
             <div className="settings-confirm" role="alert">
               <span>Disconnect every existing client?</span>
@@ -2591,7 +2878,15 @@ function SettingsPage({ navigate, section, onActiveHabitCountChange, onLastBacku
           </div>
           <div className="settings-kv">
             <span className="settings-kv-label">folder</span><span className="settings-kv-dots" />
-            <code className="settings-kv-value">{settingsValue("backups_path")}</code>
+            {editingBackupsPath ? (
+              <input className="settings-secret-input" aria-label="Backups folder" onChange={(event) => setBackupsPathDraft(event.target.value)} placeholder="empty resets to the default folder" spellCheck="false" value={backupsPathDraft} />
+            ) : <code className="settings-kv-value">{settingsValue("backups_path")}</code>}
+            {editingBackupsPath ? (
+              <>
+                <button className="settings-action-button primary" disabled={saving} onClick={() => void saveBackupsPath()} type="button">save</button>
+                <button className="settings-action-button" disabled={saving} onClick={cancelBackupsPathEdit} type="button">cancel</button>
+              </>
+            ) : <button className="settings-action-button" disabled={!settingsInfo || saving} onClick={startBackupsPathEdit} type="button">edit</button>}
           </div>
         </div>
         {settingsInfo?.last_backup_error && <p className="settings-error">last backup error: {settingsInfo.last_backup_error}</p>}
@@ -2600,8 +2895,44 @@ function SettingsPage({ navigate, section, onActiveHabitCountChange, onLastBacku
     );
   }
 
+  function colorsPanel() {
+    return (
+      <>
+        <div className="settings-panel-heading"><h2>Colors</h2></div>
+        <p className="settings-sub">Pixel colors apply the moment they are saved — the grid, the stats bars and the entry pixel all follow. Total rating has one color per step; habit score is bucketed in 5% steps.</p>
+        <div className="settings-color-group">
+          <span className="section-label">total rating</span>
+          <div className="settings-color-swatches">
+            {RATING_LEVELS.map((level) => (
+              <label className="settings-color-swatch" key={level}>
+                <input aria-label={`Total rating ${level} color`} onChange={(event) => updateRatingColor(level, event.target.value)} type="color" value={colorDraft.ratings[level]} />
+                <span>{level}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="settings-color-group">
+          <span className="section-label">habit score</span>
+          <div className="settings-color-swatches">
+            {colorDraft.habits.map((color, bucket) => (
+              <label className="settings-color-swatch" key={bucket}>
+                <input aria-label={`Habit score ${habitBucketLabel(bucket)} color`} onChange={(event) => updateHabitColor(bucket, event.target.value)} type="color" value={color} />
+                <span>{habitBucketLabel(bucket)}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="settings-panel-footer">
+          <button className="settings-action-button danger" disabled={saving || settingsLoading || !colorsLoaded} onClick={() => void resetColors()} type="button">reset to defaults</button>
+          <button className="settings-action-button primary" disabled={saving || settingsLoading || !colorsLoaded} onClick={() => void saveColors()} type="button">Save colors</button>
+        </div>
+      </>
+    );
+  }
+
   function selectedPanel() {
     if (section === "habits") return habitsPanel();
+    if (section === "colors") return colorsPanel();
     if (section === "storage") return storagePanel();
     if (section === "api") return apiPanel();
     return backupsPanel();
@@ -2672,14 +3003,104 @@ function StatusBar({ page, summary, year, activeHabitCount, lastBackup }) {
       )}
       {version && <span className="status-version">{version}</span>}
       <span className="key-hints">
-        <kbd>/</kbd> search · <kbd>n</kbd> new entry · <kbd>t</kbd> toggle view · <kbd>p</kbd> hold for phases
+        <kbd>/</kbd> search · <kbd>n</kbd> new entry · <kbd>t</kbd> toggle view · <kbd>p</kbd> hold for phases · <kbd>j</kbd> hold for entries
       </span>
     </footer>
   );
 }
 
-export default function App() {
+function LoginScreen({ onAuthed }) {
+  const [key, setKey] = useState("");
+  const [error, setError] = useState(null);
+  const [unlocking, setUnlocking] = useState(false);
+
+  async function unlock() {
+    if (unlocking || !key.trim()) return;
+    setUnlocking(true);
+    setError(null);
+    try {
+      await apiRequest("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key }),
+      }, { fallbackMessage: "login failed", fallbackCode: "login_error" });
+      onAuthed();
+    } catch (requestError) {
+      setError({ code: requestError.code, message: requestError.message });
+      setUnlocking(false);
+    }
+  }
+
+  return (
+    <div className="setup-app">
+      <SetupHeader />
+      <div className="setup-wrap">
+        <main className="setup-card">
+          <h2>Unlock DELTA</h2>
+          <p className="setup-lead">This browser is not signed in. Paste the diary&apos;s encryption key — spaces are fine.</p>
+          <div className="setup-body">
+            <label className="setup-field">
+              <span>encryption key</span>
+              <input
+                autoFocus
+                onChange={(event) => setKey(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void unlock();
+                }}
+                spellCheck="false"
+                type="password"
+                value={key}
+              />
+            </label>
+            {error && <p className="setup-error">{error.code}: {error.message}</p>}
+          </div>
+          <div className="setup-nav"><span /><button className="setup-button primary" disabled={unlocking || !key.trim()} onClick={() => void unlock()} type="button">unlock →</button></div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+// The gate in front of the app. Loopback pages carry the injected token and
+// pass straight through; a LAN browser holds a session cookie instead, so it
+// is probed once and sent to the login screen when the probe says no.
+export default function Root() {
   const [setupInfo, setSetupInfo] = useState(null);
+  const [auth, setAuth] = useState(window.__DELTA_TOKEN__ ? "ok" : "checking");
+
+  useEffect(() => {
+    if (auth !== "checking") return undefined;
+    let active = true;
+    (async () => {
+      try {
+        const response = await apiFetch("/api/setup");
+        if (response.ok) {
+          const info = await response.json();
+          if (info?.mode === "setup") {
+            if (active) setSetupInfo(info);
+            return;
+          }
+        }
+      } catch {
+        // Not a setup server; fall through to the session probe.
+      }
+      try {
+        const body = await apiRequest("/api/session", {}, { fallbackMessage: "session probe failed", fallbackCode: "session_error" });
+        if (active) setAuth(body.authenticated ? "ok" : "login");
+      } catch {
+        if (active) setAuth("login");
+      }
+    })();
+    return () => { active = false; };
+  }, [auth]);
+
+  if (setupInfo) return <SetupWizard info={setupInfo} />;
+  if (auth === "ok") return <App />;
+  if (auth === "login") return <LoginScreen onAuthed={() => setAuth("ok")} />;
+  return null;
+}
+
+function App() {
   const [page, setPage] = useState(pageFromHash);
   const [settingsSection, setSettingsSection] = useState(settingsSectionFromHash);
   const [year, setYear] = useState(new Date().getFullYear());
@@ -2687,30 +3108,40 @@ export default function App() {
   const [gridError, setGridError] = useState("");
   const [view, setView] = useState("rating");
   const [marker, setMarker] = useState(false);
+  const [entriesOnly, setEntriesOnly] = useState(false);
   const [wizardDate, setWizardDate] = useState(null);
   const [popupDate, setPopupDate] = useState(null);
   const [gridRefresh, setGridRefresh] = useState(0);
   const [activeHabitCount, setActiveHabitCount] = useState(0);
   const [lastBackup, setLastBackup] = useState("");
+  const [colors, setColors] = useState(null);
   const searchInputRef = useRef(null);
   const pendingSearchFocus = useRef(false);
   const modalOpen = Boolean(wizardDate || popupDate);
 
   useEffect(() => {
-    let active = true;
-    apiFetch("/api/setup")
-      .then(async (response) => {
-        if (!response.ok) return null;
-        return response.json();
-      })
-      .then((info) => {
-        if (active && info?.mode === "setup") setSetupInfo(info);
-      })
+    const controller = new AbortController();
+    apiRequest("/api/settings/colors", { signal: controller.signal }, {
+      fallbackMessage: "colors request failed",
+      fallbackCode: "colors_error",
+    })
+      .then((body) => setColors(body))
       .catch((requestError) => {
-        if (active) console.warn("setup probe failed", requestError.message);
+        if (requestError.name !== "AbortError") console.warn("colors request failed", requestError.message);
       });
-    return () => { active = false; };
+    return () => controller.abort();
   }, []);
+
+  // The rating palette rides the same CSS variables the px-r* ramp reads, so
+  // every rating pixel and bar follows a saved palette without a reload.
+  useEffect(() => {
+    const root = document.documentElement;
+    RATING_LEVELS.forEach((level) => {
+      const color = colors?.ratings?.[level];
+      if (color) root.style.setProperty(`--rating-${level}`, color);
+      else root.style.removeProperty(`--rating-${level}`);
+    });
+  }, [colors]);
 
   useEffect(() => {
     const onHashChange = () => {
@@ -2772,6 +3203,10 @@ export default function App() {
         setMarker(true);
         return;
       }
+      if (key === "j") {
+        setEntriesOnly(true);
+        return;
+      }
       if (event.repeat) return;
       if (key !== "n" && key !== "t" && key !== "/") return;
       event.preventDefault();
@@ -2789,9 +3224,11 @@ export default function App() {
     }
     function onKeyUp(event) {
       if (event.key === "p" || event.key === "P") setMarker(false);
+      if (event.key === "j" || event.key === "J") setEntriesOnly(false);
     }
     function onBlur() {
       setMarker(false);
+      setEntriesOnly(false);
     }
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
@@ -2813,8 +3250,6 @@ export default function App() {
     setPopupDate(null);
   }, []);
 
-  if (setupInfo) return <SetupWizard info={setupInfo} />;
-
   function openDate(date, hasEntry = false) {
     if (hasEntry) setPopupDate(date);
     else setWizardDate(date);
@@ -2835,15 +3270,19 @@ export default function App() {
     setGridRefresh((value) => value + 1);
   }
 
+  const habitColors = habitPalette(colors);
+
   return (
     <div className="app-shell">
       <Header navigate={navigate} page={page} />
       <div className="page-layout">
         {page === "grid" && (
           <GridPage
+            entriesOnly={entriesOnly}
             error={gridError}
             grid={grid}
             gridRefresh={gridRefresh}
+            habitColors={habitColors}
             marker={marker}
             onOpen={openDate}
             searchInputRef={searchInputRef}
@@ -2852,11 +3291,11 @@ export default function App() {
             year={year}
           />
         )}
-        {page === "stats" && <StatsPage setYear={setYear} year={year} />}
-        {page === "settings" && <SettingsPage navigate={navigate} onActiveHabitCountChange={setActiveHabitCount} onLastBackupChange={setLastBackup} section={settingsSection} />}
+        {page === "stats" && <StatsPage habitColors={habitColors} setYear={setYear} year={year} />}
+        {page === "settings" && <SettingsPage navigate={navigate} onActiveHabitCountChange={setActiveHabitCount} onColorsChange={setColors} onLastBackupChange={setLastBackup} section={settingsSection} />}
       </div>
       <StatusBar activeHabitCount={activeHabitCount} lastBackup={lastBackup} page={page} summary={grid?.summary || null} year={grid?.year ?? year} />
-      {popupDate && <EntryPopup date={popupDate} onClose={closePopup} onDeleted={deletePopup} onEdit={editPopup} />}
+      {popupDate && <EntryPopup date={popupDate} onClose={closePopup} onDeleted={deletePopup} onEdit={editPopup} onNavigate={setPopupDate} />}
       {wizardDate && <EntryWizard initialDate={wizardDate} onClose={closeWizard} />}
     </div>
   );

@@ -236,6 +236,12 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 // also gets a snapshot of schema version zero, which makes every migration
 // boundary restorable.
 func MigrateStore(ctx context.Context, store *Store) error {
+	return MigrateStoreWithBackups(ctx, store, "")
+}
+
+// MigrateStoreWithBackups is MigrateStore with a configured snapshot
+// directory. An empty directory keeps snapshots beside the database.
+func MigrateStoreWithBackups(ctx context.Context, store *Store, backupsDirectory string) error {
 	if store == nil || store.DB == nil {
 		return apperror.New(apperror.CodeInternalError, "storage is not open")
 	}
@@ -247,7 +253,8 @@ func MigrateStore(ctx context.Context, store *Store) error {
 		return err
 	}
 	if version < CurrentVersion() {
-		if err := store.Snapshot(ctx, migrationSnapshotPath(store.Path, version)); err != nil {
+		directory := ResolveBackupDirectory(store.Path, backupsDirectory)
+		if err := store.Snapshot(ctx, migrationSnapshotPath(directory, version)); err != nil {
 			return fmt.Errorf("create pre-migration snapshot: %w", err)
 		}
 	}
@@ -270,15 +277,24 @@ func checkSchemaVersion(version, supported int) error {
 	return nil
 }
 
-func migrationSnapshotPath(databasePath string, version int) string {
+func migrationSnapshotPath(directory string, version int) string {
 	stamp := time.Now().Format("20060102-150405")
-	return filepath.Join(BackupDirectory(databasePath), fmt.Sprintf("pre-migrate-v%d-%s.db", version, stamp))
+	return filepath.Join(directory, fmt.Sprintf("pre-migrate-v%d-%s.db", version, stamp))
 }
 
 // BackupDirectory is the shared location for automatic, manual, and
 // pre-migration snapshots belonging to one database.
 func BackupDirectory(databasePath string) string {
 	return filepath.Join(filepath.Dir(databasePath), "backups")
+}
+
+// ResolveBackupDirectory prefers a configured backups directory and otherwise
+// derives one beside the database.
+func ResolveBackupDirectory(databasePath, configured string) string {
+	if strings.TrimSpace(configured) == "" {
+		return BackupDirectory(databasePath)
+	}
+	return configured
 }
 
 // Snapshot writes a same-key encrypted VACUUM INTO copy. The destination is

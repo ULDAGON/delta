@@ -29,6 +29,15 @@ import (
 // tests can replace it with a no-op.
 var OpenBrowser = openBrowser
 
+// serveReadHeaderTimeout and serveIdleTimeout bound how long one connection
+// may occupy the server before it has sent a request. LAN access hands the
+// port to every device on the network, so no peer may pin a connection open by
+// dribbling out headers or idling. They are variables so tests can shrink them.
+var (
+	serveReadHeaderTimeout = 10 * time.Second
+	serveIdleTimeout       = 2 * time.Minute
+)
+
 const initUsage = "usage: delta init --path <p> or delta init --open <p> --key-stdin"
 
 // Run executes one CLI command. It returns errors to the executable wrapper
@@ -187,23 +196,44 @@ func runServe(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	defer store.Close()
-	if err := storage.MigrateStore(ctx, store); err != nil {
+	if err := storage.MigrateStoreWithBackups(ctx, store, c.BackupsPath); err != nil {
 		return err
 	}
 
-	listener, err := net.Listen("tcp", address)
+	bindAddress := address
+	bindNetwork := "tcp"
+	if c.Lan {
+		// "tcp" on 0.0.0.0 is a dual-stack wildcard: the socket would also
+		// answer on every IPv6 address of this machine, routable ones included.
+		bindAddress = allInterfacesAddress(address)
+		bindNetwork = "tcp4"
+	}
+	listener, err := net.Listen(bindNetwork, bindAddress)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", address, err)
+		return fmt.Errorf("listen on %s: %w", bindAddress, err)
 	}
 	defer listener.Close()
 	boundAddress := "http://" + listener.Addr().String()
+	if c.Lan {
+		boundAddress = loopbackURL(listener.Addr().String())
+	}
 	if err := config.UpdateAPIAddress(c, boundAddress); err != nil {
 		return err
 	}
 	c.APIAddress = boundAddress
-	svc := service.New(store)
-	httpServer := &http.Server{Handler: server.NewHandler(svc, c.APIToken, server.WithSettingsConfig(c), server.WithVersion(currentBuildMetadata().version))}
-	if _, err := fmt.Fprintf(stdout, "delta %s serving %s on http://%s\n", currentBuildMetadata().version, c.DatabasePath, listener.Addr().String()); err != nil {
+	svc := service.New(store, service.WithBackupsPath(c.BackupsPath))
+	httpServer := &http.Server{
+		Handler:           server.NewHandler(svc, c.APIToken, server.WithLANAccess(c.Lan), server.WithSettingsConfig(c), server.WithVersion(currentBuildMetadata().version)),
+		ReadHeaderTimeout: serveReadHeaderTimeout,
+		IdleTimeout:       serveIdleTimeout,
+	}
+	banner := fmt.Sprintf("delta %s serving %s on %s", currentBuildMetadata().version, c.DatabasePath, boundAddress)
+	if c.Lan {
+		if urls := server.LANURLs(listenPort(listener.Addr().String())); len(urls) > 0 {
+			banner += " — LAN: " + strings.Join(urls, " ")
+		}
+	}
+	if _, err := fmt.Fprintln(stdout, banner); err != nil {
 		return err
 	}
 	go func() {
@@ -341,6 +371,26 @@ func localhostAddress(address string) (string, error) {
 	default:
 		return "", fmt.Errorf("delta serve only accepts localhost addresses, got %q", host)
 	}
+}
+
+// allInterfacesAddress keeps the port carried by the localhost-validated
+// --listen flag while opening the socket to the local network.
+func allInterfacesAddress(address string) string {
+	return net.JoinHostPort("0.0.0.0", listenPort(address))
+}
+
+// loopbackURL is what serve persists as api_address. CLI and MCP clients dial
+// it, so it stays loopback even when the listener is bound to every interface.
+func loopbackURL(address string) string {
+	return "http://" + net.JoinHostPort("127.0.0.1", listenPort(address))
+}
+
+func listenPort(address string) string {
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return ""
+	}
+	return port
 }
 
 func FormatError(err error) string {

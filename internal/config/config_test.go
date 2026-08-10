@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -73,6 +74,140 @@ func TestSaveRefusesToOverwriteExistingConfig(t *testing.T) {
 	}
 	if string(after) != string(before) {
 		t.Fatalf("config changed: before=%q after=%q", before, after)
+	}
+}
+
+func TestBackupsPathIsOptionalAndRoundTrips(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	t.Setenv(config.ConfigEnv, configPath)
+	key := strings.Repeat("12", storage.KeyBytes)
+	c, err := config.New(filepath.Join(t.TempDir(), "diary.db"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Save(c); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.BackupsPath != "" {
+		t.Fatalf("fresh config backups path = %q, want empty", loaded.BackupsPath)
+	}
+
+	for _, value := range []string{filepath.Join(t.TempDir(), "elsewhere"), ""} {
+		updated, err := config.UpdateAt(configPath, func(current *config.Config) error {
+			current.BackupsPath = value
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if updated.BackupsPath != value {
+			t.Fatalf("updated backups path = %q, want %q", updated.BackupsPath, value)
+		}
+		loaded, err = config.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.BackupsPath != value {
+			t.Fatalf("loaded backups path = %q, want %q", loaded.BackupsPath, value)
+		}
+		if loaded.DatabasePath != c.DatabasePath || loaded.Key != c.Key || loaded.APIToken != c.APIToken {
+			t.Fatalf("backups path update changed protected config fields: %#v", loaded)
+		}
+	}
+}
+
+func TestLanIsOptionalAndRoundTripsAsAQuotedBoolean(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	t.Setenv(config.ConfigEnv, configPath)
+	key := strings.Repeat("56", storage.KeyBytes)
+	c, err := config.New(filepath.Join(t.TempDir(), "diary.db"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Save(c); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Lan {
+		t.Fatal("fresh config LAN = true, want false")
+	}
+
+	for _, value := range []bool{true, false} {
+		updated, err := config.UpdateAt(configPath, func(current *config.Config) error {
+			current.Lan = value
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if updated.Lan != value {
+			t.Fatalf("updated LAN = %v, want %v", updated.Lan, value)
+		}
+		contents, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := "lan = " + strconv.Quote(strconv.FormatBool(value)) + "\n"; !strings.Contains(string(contents), want) {
+			t.Fatalf("config contents = %q, want a line %q", contents, want)
+		}
+		loaded, err = config.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.Lan != value {
+			t.Fatalf("loaded LAN = %v, want %v", loaded.Lan, value)
+		}
+		if loaded.DatabasePath != c.DatabasePath || loaded.Key != c.Key || loaded.APIToken != c.APIToken {
+			t.Fatalf("LAN update changed protected config fields: %#v", loaded)
+		}
+	}
+
+	t.Run("absent", func(t *testing.T) {
+		olderConfigPath := filepath.Join(t.TempDir(), "config.toml")
+		t.Setenv(config.ConfigEnv, olderConfigPath)
+		contents := "database_path = " + strconv.Quote(filepath.Join(t.TempDir(), "diary.db")) + "\n" +
+			"key = " + strconv.Quote(key) + "\n" +
+			"api_token = \"token\"\n"
+		if err := os.WriteFile(olderConfigPath, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		older, err := config.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if older.Lan {
+			t.Fatal("config without a lan line loaded LAN = true, want false")
+		}
+	})
+}
+
+func TestLoadExpandsHomeInBackupsPath(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	t.Setenv(config.ConfigEnv, configPath)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := "database_path = " + strconv.Quote(filepath.Join(t.TempDir(), "diary.db")) + "\n" +
+		"backups_path = \"~/delta-backups\"\n" +
+		"key = " + strconv.Quote(strings.Repeat("34", storage.KeyBytes)) + "\n" +
+		"api_token = \"token\"\n"
+	if err := os.WriteFile(configPath, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, "delta-backups"); loaded.BackupsPath != want {
+		t.Fatalf("backups path = %q, want %q", loaded.BackupsPath, want)
 	}
 }
 

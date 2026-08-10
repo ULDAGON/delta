@@ -25,15 +25,50 @@ type Service struct {
 
 const serviceDateFormat = "2006-01-02"
 
-func New(store *storage.Store) *Service {
-	return &Service{Store: store, backups: newBackupManager(store), lastBackup: latestBackupTime(store)}
+// Option adjusts one Service at construction time.
+type Option func(*serviceOptions)
+
+type serviceOptions struct {
+	backupsPath string
 }
 
-func latestBackupTime(store *storage.Store) time.Time {
-	if store == nil {
-		return time.Time{}
+// WithBackupsPath sends every snapshot to a configured directory. An empty
+// path keeps snapshots beside the database.
+func WithBackupsPath(path string) Option {
+	return func(options *serviceOptions) { options.backupsPath = path }
+}
+
+func New(store *storage.Store, options ...Option) *Service {
+	var applied serviceOptions
+	for _, option := range options {
+		if option != nil {
+			option(&applied)
+		}
 	}
-	entries, err := os.ReadDir(storage.BackupDirectory(store.Path))
+	directory := applied.backupsPath
+	if store != nil {
+		directory = storage.ResolveBackupDirectory(store.Path, applied.backupsPath)
+	}
+	return &Service{Store: store, backups: newBackupManager(store, directory), lastBackup: latestBackupTime(directory)}
+}
+
+// SetBackupsPath repoints automatic and manual snapshots at a configured
+// directory while the process keeps running; an empty path returns to the
+// directory derived beside the database. The reported last-backup time is
+// re-seeded from the new directory, which is what the next start would read.
+func (s *Service) SetBackupsPath(path string) {
+	directory := path
+	if s.Store != nil {
+		directory = storage.ResolveBackupDirectory(s.Store.Path, path)
+	}
+	s.backups.setDirectory(directory)
+	s.backupsMu.Lock()
+	s.lastBackup = latestBackupTime(directory)
+	s.backupsMu.Unlock()
+}
+
+func latestBackupTime(directory string) time.Time {
+	entries, err := os.ReadDir(directory)
 	if err != nil {
 		return time.Time{}
 	}

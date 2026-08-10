@@ -159,41 +159,80 @@ func (s *Service) ListEntries(ctx context.Context, from, to string) ([]Entry, er
 	return entries, nil
 }
 
-func (s *Service) listEntries(ctx context.Context, from, to string) ([]Entry, error) {
+// EntryDate is the date-only projection of one entry, for clients that need
+// the calendar of existing entries rather than their contents.
+type EntryDate struct {
+	Date string `json:"date"`
+}
+
+// ListEntryDates lists the dates of existing entries with the same validation,
+// range filtering, and ordering as ListEntries, reading no other column.
+func (s *Service) ListEntryDates(ctx context.Context, from, to string) ([]EntryDate, error) {
+	query, args, err := entryRangeQuery("date", from, to)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.Store.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list entry dates: %w", err)
+	}
+	defer rows.Close()
+	dates := make([]EntryDate, 0)
+	for rows.Next() {
+		var date EntryDate
+		if err := rows.Scan(&date.Date); err != nil {
+			return nil, fmt.Errorf("read entry date row: %w", err)
+		}
+		dates = append(dates, date)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list entry dates: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close entry dates: %w", err)
+	}
+	return dates, nil
+}
+
+// entryRangeQuery builds the range-filtered entries query shared by the full
+// and date-only reads, so both accept and order exactly the same requests.
+func entryRangeQuery(columns, from, to string) (string, []any, error) {
 	if from != "" {
 		if err := ValidateDate(from); err != nil {
-			return nil, err
+			return "", nil, err
 		}
 	}
 	if to != "" {
 		if err := ValidateDate(to); err != nil {
-			return nil, err
+			return "", nil, err
 		}
 	}
 	if from != "" && to != "" && from > to {
-		return nil, apperror.New(apperror.CodeInvalidDate, "from date must not be after to date")
+		return "", nil, apperror.New(apperror.CodeInvalidDate, "from date must not be after to date")
 	}
 
-	query := `SELECT ` + entryColumns + ` FROM entries`
+	query := `SELECT ` + columns + ` FROM entries`
 	args := make([]any, 0, 2)
-	where := ""
+	filters := make([]string, 0, 2)
 	if from != "" {
-		where = " date >= ?"
+		filters = append(filters, "date >= ?")
 		args = append(args, from)
 	}
 	if to != "" {
-		if where != "" {
-			where += " AND"
-		} else {
-			where = " "
-		}
-		where += " date <= ?"
+		filters = append(filters, "date <= ?")
 		args = append(args, to)
 	}
-	if where != "" {
-		query += " WHERE" + where
+	if len(filters) > 0 {
+		query += " WHERE " + strings.Join(filters, " AND ")
 	}
-	query += " ORDER BY date"
+	return query + " ORDER BY date", args, nil
+}
+
+func (s *Service) listEntries(ctx context.Context, from, to string) ([]Entry, error) {
+	query, args, err := entryRangeQuery(entryColumns, from, to)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.Store.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list entries: %w", err)

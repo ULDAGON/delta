@@ -339,12 +339,25 @@ func setupPath(payload setupPayload) (string, error) {
 }
 
 func EnsureCreatePath(path string) error {
-	if _, err := os.Stat(path); err == nil {
+	occupied, err := databaseFileExists(path)
+	if err != nil {
+		return err
+	}
+	if occupied {
 		return apperror.New(apperror.CodeDatabaseExists, "a database already exists at this path; choose open existing diary")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return apperror.Wrap(apperror.CodeInvalidSetup, "cannot check database path", err)
 	}
 	return nil
+}
+
+// databaseFileExists reports whether a database path is already occupied. Setup
+// refuses such a path for its create door; Settings adopts the diary there.
+func databaseFileExists(path string) (bool, error) {
+	if _, err := os.Stat(path); err == nil {
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, apperror.Wrap(apperror.CodeInvalidSetup, "cannot check database path", err)
+	}
+	return false, nil
 }
 
 func writeSetupError(w http.ResponseWriter, err error) {
