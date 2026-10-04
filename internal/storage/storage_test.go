@@ -241,7 +241,9 @@ func TestWorkHoursMigrationKeepsLegacyEntriesUnset(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	legacyVersion := storage.CurrentVersion() - 1
+	// The schema version just before the work-hours migration; later
+	// migrations must not move it.
+	const legacyVersion = 6
 	if _, err := store.DB.Exec(`
 		ALTER TABLE entries DROP COLUMN work_hours;
 		INSERT INTO entries(date, text) VALUES ('2026-08-02', 'entry written before work hours');
@@ -277,6 +279,63 @@ func TestWorkHoursMigrationKeepsLegacyEntriesUnset(t *testing.T) {
 	}
 	if err := storage.Migrate(context.Background(), store.DB); err != nil {
 		t.Fatalf("re-running the work-hours migration = %v, want a no-op", err)
+	}
+}
+
+func TestPeriodsMigrationUpgradesAnExistingDiary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "diary.db")
+	key := strings.Repeat("09", storage.KeyBytes)
+	store, err := storage.Open(context.Background(), path, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := storage.Migrate(context.Background(), store.DB); err != nil {
+		t.Fatal(err)
+	}
+
+	// The schema version just before eras and dynasties existed.
+	const legacyVersion = 7
+	if _, err := store.DB.Exec(`
+		DROP TABLE periods;
+		INSERT INTO entries(date, text) VALUES ('2026-08-02', 'entry written before eras');
+		PRAGMA user_version = ` + strconv.Itoa(legacyVersion) + `;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.Migrate(context.Background(), store.DB); err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	if err := store.DB.QueryRow(`SELECT text FROM entries WHERE date = '2026-08-02'`).Scan(&text); err != nil || text != "entry written before eras" {
+		t.Fatalf("legacy entry = %q, %v, want it untouched", text, err)
+	}
+	if _, err := store.DB.Exec(`
+		INSERT INTO periods(kind, name, color, start_date, end_date) VALUES
+			('era', 'Berlin', '#112233', '2020-01-01', '2020-12-31'),
+			('dynasty', 'Berlin', '#112233', '2020-01-01', NULL)`); err != nil {
+		t.Fatalf("insert periods after upgrade: %v", err)
+	}
+	for _, invalid := range []string{
+		`INSERT INTO periods(kind, name, color, start_date) VALUES ('epoch', 'X', '#112233', '2020-01-01')`,
+		`INSERT INTO periods(kind, name, color, start_date, end_date) VALUES ('era', 'X', '#112233', '2020-02-01', '2020-01-31')`,
+	} {
+		if _, err := store.DB.Exec(invalid); err == nil {
+			t.Fatalf("%s succeeded, want a CHECK failure", invalid)
+		}
+	}
+
+	// Re-running the migration over a database that already has the table
+	// must keep its rows.
+	if _, err := store.DB.Exec(`PRAGMA user_version = ` + strconv.Itoa(legacyVersion)); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.Migrate(context.Background(), store.DB); err != nil {
+		t.Fatalf("re-running the periods migration = %v, want a no-op", err)
+	}
+	var count int
+	if err := store.DB.QueryRow(`SELECT COUNT(*) FROM periods`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("periods after re-run = %d, %v, want 2", count, err)
 	}
 }
 

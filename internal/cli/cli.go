@@ -64,6 +64,10 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runEntry(ctx, args[1:], stdin, stdout)
 	case "habit":
 		return runHabit(ctx, args[1:], stdout)
+	case "era":
+		return eraCommand.run(ctx, args[1:], stdout)
+	case "dynasty":
+		return dynastyCommand.run(ctx, args[1:], stdout)
 	case "backup":
 		return runBackup(ctx, args[1:], stdout)
 	case "grid":
@@ -73,7 +77,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	case "search":
 		return runSearch(ctx, args[1:], stdout)
 	default:
-		return fmt.Errorf("unknown command %q; try delta init, delta serve, delta service, delta mcp, delta entry, delta habit, delta grid, delta stats, delta search, or delta backup", args[0])
+		return fmt.Errorf("unknown command %q; try delta init, delta serve, delta service, delta mcp, delta entry, delta habit, delta era, delta dynasty, delta grid, delta stats, delta search, or delta backup", args[0])
 	}
 }
 

@@ -22,6 +22,36 @@ type StatsAverages struct {
 	WorkHours  *float64 `json:"work_hours"`
 }
 
+// StatsChanges is the relative change in percent against the comparison
+// window in the previous year. A value is nil when either side is missing or
+// the previous value is zero.
+type StatsChanges struct {
+	Characters *float64 `json:"characters"`
+	Total      *float64 `json:"total"`
+	HabitScore *float64 `json:"habit_score"`
+	WorkHours  *float64 `json:"work_hours"`
+}
+
+// Characters record states.
+const (
+	CharactersRecordBehind = "behind"
+	CharactersRecordAhead  = "ahead"
+	CharactersRecordPast   = "past"
+	CharactersRecordRecord = "record"
+)
+
+// CharactersRecord compares a calendar year's character total with the record
+// year. Behind and ahead apply to the current year; past and record apply to
+// finished years. Numbers a state does not use are omitted.
+type CharactersRecord struct {
+	State            string `json:"state"`
+	RecordYear       *int   `json:"record_year,omitempty"`
+	RecordCharacters *int   `json:"record_characters,omitempty"`
+	PerDay           *int   `json:"per_day,omitempty"`
+	Difference       *int   `json:"difference,omitempty"`
+	PreviousYear     *int   `json:"previous_year,omitempty"`
+}
+
 type HabitStreak struct {
 	ID      int64  `json:"id"`
 	Name    string `json:"name"`
@@ -59,6 +89,10 @@ type StatsResponse struct {
 	EarliestYear *int              `json:"earliest_year"`
 	CurrentYear  int               `json:"current_year"`
 	Years        []int             `json:"years"`
+	// Changes and CharactersRecord are only set when the range is exactly one
+	// calendar year; CharactersRecord is also nil when no comparison exists.
+	Changes          *StatsChanges     `json:"changes"`
+	CharactersRecord *CharactersRecord `json:"characters_record"`
 }
 
 type statsMonth struct {
@@ -104,67 +138,12 @@ func (s *Service) Stats(ctx context.Context, from, to, aggregation string) (Stat
 	for _, entry := range entries {
 		entryByDate[entry.Date] = entry
 	}
-	months := statsMonths(from, to)
-	monthIndex := make(map[string]int, len(months))
-	monthValues := make([]statsMonth, len(months))
-	for index, month := range months {
-		monthValues[index].month = month
-		monthIndex[month] = index
-	}
 	today := LocalToday()
-	effectiveTo := to
-	if effectiveTo > today {
-		effectiveTo = today
-	}
-
-	var ratingTotal float64
-	ratingCount := 0
-	entriesInRange := 0
-	characters := 0
-	completionChecked := make(map[string]int, len(habits))
-	completionActive := make(map[string]int, len(habits))
-
-	if from <= effectiveTo {
-		for _, entry := range entries {
-			if entry.Date < from || entry.Date > effectiveTo {
-				continue
-			}
-			entriesInRange++
-			characters += len([]rune(entry.Text))
-			if entry.Ratings.Total != nil {
-				ratingTotal += float64(*entry.Ratings.Total)
-				ratingCount++
-				monthValues[monthIndex[entry.Date[:7]]].ratingSum += float64(*entry.Ratings.Total)
-				monthValues[monthIndex[entry.Date[:7]]].ratingN++
-			}
-			if entry.WorkHours != nil {
-				monthValues[monthIndex[entry.Date[:7]]].workSum += *entry.WorkHours
-				monthValues[monthIndex[entry.Date[:7]]].workN++
-			}
-		}
-
-		for date := from; date <= effectiveTo; date = nextDate(date) {
-			active := activeHabitIDsAt(schedules, date)
-			if len(active) == 0 {
-				continue
-			}
-			entry := entryByDate[date]
-			daily := CalculateDailyHabitScore(entry.Checkoffs, active)
-			score := float64(0)
-			if daily.Percent != nil {
-				score = *daily.Percent
-			}
-			point := &monthValues[monthIndex[date[:7]]]
-			point.habitSum += score
-			point.habitN++
-			for habitID := range active {
-				completionActive[habitID]++
-			}
-			for _, habitID := range daily.VisibleCheckoffs {
-				completionChecked[habitID]++
-			}
-		}
-	}
+	window := aggregateStats(from, to, today, entries, entryByDate, schedules)
+	monthValues := window.months
+	characters := window.characters
+	completionChecked := window.completionChecked
+	completionActive := window.completionActive
 
 	// Habits with no active day inside the requested range stay out of the
 	// per-range lists entirely; an ended habit belongs to its own years only.
@@ -184,7 +163,7 @@ func (s *Service) Stats(ctx context.Context, from, to, aggregation string) (Stat
 		HabitScore:  make([]StatsPoint, len(monthValues)),
 		WorkHours:   make([]StatsPoint, len(monthValues)),
 		Averages:    StatsAverages{},
-		Entries:     entriesInRange,
+		Entries:     window.entries,
 		Characters:  characters,
 		Streaks:     calculateHabitStreaks(rangeHabits, schedules, entryByDate, today),
 		Completion:  make([]HabitCompletion, 0, len(rangeHabits)),
@@ -209,26 +188,7 @@ func (s *Service) Stats(ctx context.Context, from, to, aggregation string) (Stat
 		response.HabitScore[index] = habit
 		response.WorkHours[index] = work
 	}
-	if ratingCount > 0 {
-		average := ratingTotal / float64(ratingCount)
-		response.Averages.Total = &average
-	}
-	var habitSum, workSum float64
-	var habitCount, workCount int
-	for _, point := range monthValues {
-		habitSum += point.habitSum
-		habitCount += point.habitN
-		workSum += point.workSum
-		workCount += point.workN
-	}
-	if habitCount > 0 {
-		average := habitSum / float64(habitCount)
-		response.Averages.HabitScore = &average
-	}
-	if workCount > 0 {
-		average := workSum / float64(workCount)
-		response.Averages.WorkHours = &average
-	}
+	response.Averages = window.averages()
 	for _, habit := range rangeHabits {
 		id := fmt.Sprintf("%d", habit.ID)
 		activeDays := completionActive[id]
@@ -238,7 +198,221 @@ func (s *Service) Stats(ctx context.Context, from, to, aggregation string) (Stat
 		})
 	}
 	response.EarliestYear, response.CurrentYear, response.Years = yearRailMetadata(entries)
+	if year, ok := wholeCalendarYear(from, to); ok {
+		response.Changes = statsChanges(year, today, response, entries, entryByDate, schedules)
+		response.CharactersRecord = statsCharactersRecord(year, today, characters, entries)
+	}
 	return response, nil
+}
+
+// statsWindow holds the raw aggregates for one date range. Stats reads the
+// monthly series and completion counts from it; the previous-year comparison
+// reuses it for the averages only.
+type statsWindow struct {
+	months            []statsMonth
+	entries           int
+	characters        int
+	ratingTotal       float64
+	ratingCount       int
+	completionChecked map[string]int
+	completionActive  map[string]int
+}
+
+// aggregateStats walks from through min(to, today). The month list still spans
+// the whole range so future months appear as empty points.
+func aggregateStats(from, to, today string, entries []Entry, entryByDate map[string]Entry, schedules []habitSchedule) statsWindow {
+	months := statsMonths(from, to)
+	monthIndex := make(map[string]int, len(months))
+	window := statsWindow{
+		months:            make([]statsMonth, len(months)),
+		completionChecked: map[string]int{},
+		completionActive:  map[string]int{},
+	}
+	for index, month := range months {
+		window.months[index].month = month
+		monthIndex[month] = index
+	}
+	effectiveTo := to
+	if effectiveTo > today {
+		effectiveTo = today
+	}
+	if from > effectiveTo {
+		return window
+	}
+
+	for _, entry := range entries {
+		if entry.Date < from || entry.Date > effectiveTo {
+			continue
+		}
+		window.entries++
+		window.characters += len([]rune(entry.Text))
+		if entry.Ratings.Total != nil {
+			window.ratingTotal += float64(*entry.Ratings.Total)
+			window.ratingCount++
+			window.months[monthIndex[entry.Date[:7]]].ratingSum += float64(*entry.Ratings.Total)
+			window.months[monthIndex[entry.Date[:7]]].ratingN++
+		}
+		if entry.WorkHours != nil {
+			window.months[monthIndex[entry.Date[:7]]].workSum += *entry.WorkHours
+			window.months[monthIndex[entry.Date[:7]]].workN++
+		}
+	}
+
+	for date := from; date <= effectiveTo; date = nextDate(date) {
+		active := activeHabitIDsAt(schedules, date)
+		if len(active) == 0 {
+			continue
+		}
+		entry := entryByDate[date]
+		daily := CalculateDailyHabitScore(entry.Checkoffs, active)
+		score := float64(0)
+		if daily.Percent != nil {
+			score = *daily.Percent
+		}
+		point := &window.months[monthIndex[date[:7]]]
+		point.habitSum += score
+		point.habitN++
+		for habitID := range active {
+			window.completionActive[habitID]++
+		}
+		for _, habitID := range daily.VisibleCheckoffs {
+			window.completionChecked[habitID]++
+		}
+	}
+	return window
+}
+
+func (w statsWindow) averages() StatsAverages {
+	var averages StatsAverages
+	if w.ratingCount > 0 {
+		average := w.ratingTotal / float64(w.ratingCount)
+		averages.Total = &average
+	}
+	var habitSum, workSum float64
+	var habitCount, workCount int
+	for _, point := range w.months {
+		habitSum += point.habitSum
+		habitCount += point.habitN
+		workSum += point.workSum
+		workCount += point.workN
+	}
+	if habitCount > 0 {
+		average := habitSum / float64(habitCount)
+		averages.HabitScore = &average
+	}
+	if workCount > 0 {
+		average := workSum / float64(workCount)
+		averages.WorkHours = &average
+	}
+	return averages
+}
+
+// wholeCalendarYear reports the year when the range is exactly Jan 1 through
+// Dec 31 of one year.
+func wholeCalendarYear(from, to string) (int, bool) {
+	year := yearFromDate(from)
+	if year < 2 {
+		return 0, false
+	}
+	return year, from == fmt.Sprintf("%04d-01-01", year) && to == fmt.Sprintf("%04d-12-31", year)
+}
+
+// statsChanges compares the response against the previous year. The current
+// year is compared year-to-date against the same period last year; a past year
+// against the whole previous year. A future year has nothing to compare, so
+// every value is nil.
+func statsChanges(year int, today string, current StatsResponse, entries []Entry, entryByDate map[string]Entry, schedules []habitSchedule) *StatsChanges {
+	currentYear := yearFromDate(today)
+	if year > currentYear {
+		return &StatsChanges{}
+	}
+	previousFrom := fmt.Sprintf("%04d-01-01", year-1)
+	previousTo := fmt.Sprintf("%04d-12-31", year-1)
+	if year == currentYear {
+		monthDay := today[5:]
+		if monthDay == "02-29" {
+			monthDay = "02-28"
+		}
+		previousTo = fmt.Sprintf("%04d-%s", year-1, monthDay)
+	}
+	previous := aggregateStats(previousFrom, previousTo, today, entries, entryByDate, schedules)
+	averages := previous.averages()
+	characters := float64(current.Characters)
+	previousCharacters := float64(previous.characters)
+	return &StatsChanges{
+		Characters: relativeChange(&characters, &previousCharacters),
+		Total:      relativeChange(current.Averages.Total, averages.Total),
+		HabitScore: relativeChange(current.Averages.HabitScore, averages.HabitScore),
+		WorkHours:  relativeChange(current.Averages.WorkHours, averages.WorkHours),
+	}
+}
+
+// relativeChange is (current - previous) / previous in percent, nil when
+// either value is missing or the previous value is zero.
+func relativeChange(current, previous *float64) *float64 {
+	if current == nil || previous == nil || *previous == 0 {
+		return nil
+	}
+	change := (*current - *previous) / *previous * 100
+	return &change
+}
+
+// statsCharactersRecord paces a calendar year's character total against the
+// highest total of any other year. Future-dated entries do not count.
+func statsCharactersRecord(year int, today string, characters int, entries []Entry) *CharactersRecord {
+	currentYear := yearFromDate(today)
+	if year > currentYear {
+		return nil
+	}
+	yearTotals := map[int]int{}
+	for _, entry := range entries {
+		if entry.Date <= today {
+			yearTotals[yearFromDate(entry.Date)] += len([]rune(entry.Text))
+		}
+	}
+	recordYear, recordCharacters := 0, 0
+	for candidate, total := range yearTotals {
+		if candidate == year || total <= 0 {
+			continue
+		}
+		if total > recordCharacters || (total == recordCharacters && candidate < recordYear) {
+			recordYear, recordCharacters = candidate, total
+		}
+	}
+
+	if year == currentYear {
+		if recordYear == 0 {
+			return nil
+		}
+		if characters > recordCharacters {
+			difference := characters - recordCharacters
+			return &CharactersRecord{State: CharactersRecordAhead, RecordYear: &recordYear, RecordCharacters: &recordCharacters, Difference: &difference}
+		}
+		// Today counts as a remaining day. At least one character is needed even
+		// when the totals are level, so the pace never reads as zero.
+		needed := recordCharacters - characters
+		if needed < 1 {
+			needed = 1
+		}
+		daysLeft := time.Date(year, time.December, 31, 0, 0, 0, 0, time.UTC).YearDay() - mustParseDate(today).YearDay() + 1
+		perDay := (needed + daysLeft - 1) / daysLeft
+		return &CharactersRecord{State: CharactersRecordBehind, RecordYear: &recordYear, RecordCharacters: &recordCharacters, PerDay: &perDay}
+	}
+
+	if characters > 0 && characters > recordCharacters {
+		return &CharactersRecord{State: CharactersRecordRecord}
+	}
+	previousYear := year - 1
+	if len(entries) == 0 || previousYear < yearFromDate(entries[0].Date) {
+		return nil
+	}
+	difference := characters - yearTotals[previousYear]
+	return &CharactersRecord{State: CharactersRecordPast, Difference: &difference, PreviousYear: &previousYear}
+}
+
+func mustParseDate(date string) time.Time {
+	value, _ := time.Parse(serviceDateFormat, date)
+	return value
 }
 
 func normalizeStatsRange(from, to string) (string, string, error) {

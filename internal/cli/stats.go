@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 
 	apiclient "github.com/ferriskleier/delta/internal/client"
 	"github.com/ferriskleier/delta/internal/service"
@@ -72,18 +74,88 @@ func runStats(ctx context.Context, args []string, stdout io.Writer) error {
 	if err := json.Unmarshal(body, &stats); err != nil {
 		return fmt.Errorf("decode stats response: %w", err)
 	}
+	var changes service.StatsChanges
+	if stats.Changes != nil {
+		changes = *stats.Changes
+	}
 	total := "—"
 	if stats.Averages.Total != nil {
-		total = fmt.Sprintf("%.1f", *stats.Averages.Total)
+		total = fmt.Sprintf("%.1f", *stats.Averages.Total) + statsChangeSuffix(changes.Total)
 	}
 	habit := "—"
 	if stats.Averages.HabitScore != nil {
-		habit = fmt.Sprintf("%.0f%%", *stats.Averages.HabitScore)
+		habit = fmt.Sprintf("%.0f%%", *stats.Averages.HabitScore) + statsChangeSuffix(changes.HabitScore)
 	}
 	work := "—"
 	if stats.Averages.WorkHours != nil {
-		work = fmt.Sprintf("%.1fh", *stats.Averages.WorkHours)
+		work = fmt.Sprintf("%.1fh", *stats.Averages.WorkHours) + statsChangeSuffix(changes.WorkHours)
 	}
-	_, err = fmt.Fprintf(stdout, "%s → %s · %d chars · avg total %s · habit %s · work %s\n", stats.From, stats.To, stats.Characters, total, habit, work)
+	if _, err := fmt.Fprintf(stdout, "%s → %s · %d chars%s · avg total %s · habit %s · work %s\n", stats.From, stats.To, stats.Characters, statsChangeSuffix(changes.Characters), total, habit, work); err != nil {
+		return err
+	}
+	if caption := charactersRecordCaption(stats.CharactersRecord); caption != "" {
+		_, err = fmt.Fprintln(stdout, caption)
+	}
 	return err
+}
+
+// statsChangeSuffix renders a relative change as " (+4.1%)"; absent changes
+// render nothing.
+func statsChangeSuffix(change *float64) string {
+	if change == nil {
+		return ""
+	}
+	return fmt.Sprintf(" (%+.1f%%)", *change)
+}
+
+func charactersRecordCaption(record *service.CharactersRecord) string {
+	if record == nil {
+		return ""
+	}
+	switch record.State {
+	case service.CharactersRecordBehind:
+		if record.PerDay == nil || record.RecordYear == nil {
+			return ""
+		}
+		return fmt.Sprintf("%s/day to break record (%d)", groupThousands(*record.PerDay), *record.RecordYear)
+	case service.CharactersRecordAhead:
+		if record.Difference == nil || record.RecordYear == nil {
+			return ""
+		}
+		return fmt.Sprintf("+%s over record (%d)", groupThousands(*record.Difference), *record.RecordYear)
+	case service.CharactersRecordPast:
+		if record.Difference == nil || record.PreviousYear == nil {
+			return ""
+		}
+		sign := "+"
+		if *record.Difference < 0 {
+			sign = "-"
+		}
+		return fmt.Sprintf("%s%s vs %d", sign, groupThousands(absInt(*record.Difference)), *record.PreviousYear)
+	case service.CharactersRecordRecord:
+		return "record year"
+	}
+	return ""
+}
+
+func groupThousands(value int) string {
+	digits := strconv.Itoa(absInt(value))
+	var grouped strings.Builder
+	for index, digit := range digits {
+		if index > 0 && (len(digits)-index)%3 == 0 {
+			grouped.WriteByte(',')
+		}
+		grouped.WriteRune(digit)
+	}
+	if value < 0 {
+		return "-" + grouped.String()
+	}
+	return grouped.String()
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }

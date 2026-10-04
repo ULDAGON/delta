@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -133,6 +134,80 @@ func TestMCPEntryAndHabitLifecycleOverStdio(t *testing.T) {
 	}
 }
 
+func TestMCPEraAndDynastyLifecycle(t *testing.T) {
+	h := api.NewTestHarness(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	server := deltamcp.NewServer(h.Server.URL, h.Token, h.Server.Client())
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverDone := make(chan error, 1)
+	go func() { serverDone <- server.Run(ctx, serverTransport) }()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "delta-test-client", Version: "test"}, nil)
+	session, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = session.Close()
+		cancel()
+		select {
+		case <-serverDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("MCP server did not stop after session close")
+		}
+	}()
+
+	for _, kind := range []string{"era", "dynasty"} {
+		idName := kind + "_id"
+		added := callTool(t, ctx, session, kind+"_add", map[string]any{
+			"name": "Berlin", "color": "#112233", "start_date": "2020-01-01", "end_date": "2020-12-31",
+		})
+		if added.IsError {
+			t.Fatalf("%s_add returned tool error: %s", kind, toolText(added))
+		}
+		var value struct {
+			ID int64 `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(toolText(added)), &value); err != nil || value.ID == 0 {
+			t.Fatalf("%s_add payload = %q, err = %v", kind, toolText(added), err)
+		}
+		overlap := callTool(t, ctx, session, kind+"_add", map[string]any{
+			"name": "Clash", "color": "#112233", "start_date": "2020-06-01",
+		})
+		if !overlap.IsError || !containsText(overlap, `"code":"invalid_`+kind+`"`) || !containsText(overlap, "Berlin") {
+			t.Fatalf("overlapping %s_add = %s", kind, toolText(overlap))
+		}
+
+		ongoing := callTool(t, ctx, session, kind+"_patch", map[string]any{idName: value.ID, "name": "Berlin years", "end_date": nil})
+		if ongoing.IsError || !containsText(ongoing, `"name":"Berlin years"`) || !containsText(ongoing, `"end_date":null`) {
+			t.Fatalf("%s_patch = %s", kind, toolText(ongoing))
+		}
+		listed := callTool(t, ctx, session, kind+"_list", map[string]any{})
+		if listed.IsError || !containsText(listed, `"name":"Berlin years"`) {
+			t.Fatalf("%s_list = %s", kind, toolText(listed))
+		}
+		grid := callTool(t, ctx, session, "grid", map[string]any{"year": 2021})
+		if grid.IsError || !containsText(grid, `"`+idName+`":`+strconv.FormatInt(value.ID, 10)) {
+			t.Fatalf("grid after %s_patch does not carry %s", kind, idName)
+		}
+
+		missingID := callTool(t, ctx, session, kind+"_delete", map[string]any{})
+		if !missingID.IsError || !containsText(missingID, `"code":"invalid_`+kind+`"`) || !containsText(missingID, idName+" is required") {
+			t.Fatalf("%s_delete without an id = %s", kind, toolText(missingID))
+		}
+		deleted := callTool(t, ctx, session, kind+"_delete", map[string]any{idName: value.ID})
+		if deleted.IsError || !containsText(deleted, `"ok":true`) {
+			t.Fatalf("%s_delete = %s", kind, toolText(deleted))
+		}
+		again := callTool(t, ctx, session, kind+"_delete", map[string]any{idName: value.ID})
+		if !again.IsError || !containsText(again, `"code":"`+kind+`_not_found"`) {
+			t.Fatalf("second %s_delete = %s", kind, toolText(again))
+		}
+	}
+}
+
 func TestMCPUnavailableServeIsAStableToolError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -224,8 +299,10 @@ func assertExactTools(t *testing.T, result *mcp.ListToolsResult) {
 	want := map[string]struct{}{
 		"entry_get": {}, "entry_set": {}, "entry_delete": {}, "entries_range": {},
 		"habit_list": {}, "habit_add": {}, "habit_patch": {}, "habit_check": {},
-		"habit_uncheck": {}, "habit_archive": {}, "grid": {}, "stats": {},
-		"search": {}, "backup": {},
+		"habit_uncheck": {}, "habit_archive": {},
+		"era_list": {}, "era_add": {}, "era_patch": {}, "era_delete": {},
+		"dynasty_list": {}, "dynasty_add": {}, "dynasty_patch": {}, "dynasty_delete": {},
+		"grid": {}, "stats": {}, "search": {}, "backup": {},
 	}
 	got := make(map[string]struct{}, len(result.Tools))
 	for _, tool := range result.Tools {

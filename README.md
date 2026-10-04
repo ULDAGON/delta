@@ -220,6 +220,30 @@ the same request is evaluated against the new range set. `position` is clamped
 at both edges: negative values move the habit to position `0`, and values at or
 above the habit count move it to the last position.
 
+Eras and dynasties share one contract under `/api/eras` and `/api/dynasties`:
+
+- `GET` returns an array of `{id, name, color, start_date, end_date}`, newest
+  `start_date` first. `end_date` is `null` while the item is ongoing.
+- `POST` takes `{name, color, start_date, end_date}` and returns the created
+  object with `201`. `end_date` may be omitted or `null`.
+- `PATCH /api/eras/:id` takes any subset of those fields and returns the updated
+  object. `end_date: null` makes it ongoing; an absent `end_date` leaves it
+  unchanged.
+- `DELETE /api/eras/:id` answers `204` with no body.
+
+Names are trimmed and unique within a kind, ignoring case. `color` must be
+`#rrggbb`. Dates are inclusive, the end may not precede the start, and a range
+may not overlap another item of the same kind — an ongoing item reaches into
+the future without limit. Every rejected field, duplicate name, or overlap is a
+`400` with code `invalid_era` or `invalid_dynasty`; the overlap message names
+the conflicting item. An unknown ID is a `404` with `era_not_found` or
+`dynasty_not_found`. Eras and dynasties never interact: IDs, names, and ranges
+are only compared within one kind.
+
+Every day in the `GET /api/grid` response carries `era_id` and `dynasty_id`:
+the ID of the item covering that date, or `null`. They are present on every day
+of the requested year, including days without an entry and future days.
+
 ## Habit CLI
 
 With `delta serve` running, habits can be managed through the authenticated
@@ -236,6 +260,26 @@ delta habit archive "Read" --json
 Habit check/uncheck/archive identifiers accept either a numeric habit ID or an
 exact habit name. Check/uncheck dates default to the server's local today and
 can also be supplied with `--date`.
+
+## Era and dynasty CLI
+
+Eras and dynasties label date ranges of your life. The two commands take the
+same subcommands and flags:
+
+```sh
+delta era list --json
+delta era add "Berlin" --color "#3b82f6" --start 2020-01-01 --end 2021-06-30 --json
+delta era add "Freelance" --color "#f59e0b" --start 2021-07-01 --json
+delta era edit "Berlin" --name "Berlin years" --end 2021-05-31 --json
+delta era edit "Freelance" --ongoing --json
+delta era delete "Berlin years" --json
+delta dynasty add "Twenties" --color "#10b981" --start 2016-04-12 --json
+```
+
+`add` without `--end` creates an ongoing item. `edit` changes only the fields
+whose flags are given; `--end` sets the last day and `--ongoing` clears it.
+`edit` and `delete` identifiers accept either a numeric ID or an exact name.
+Quote the color so the shell does not treat `#` as a comment.
 
 ## Backups
 
@@ -284,7 +328,9 @@ For an MCP client that accepts a `mcpServers` configuration, add:
 
 The server exposes `entry_get`, `entry_set`, `entry_delete`, `entries_range`,
 `habit_list`, `habit_add`, `habit_patch`, `habit_check`, `habit_uncheck`,
-`habit_archive`, `grid`, `stats`, `search`, and `backup`. Dates are always
+`habit_archive`, `era_list`, `era_add`, `era_patch`, `era_delete`,
+`dynasty_list`, `dynasty_add`, `dynasty_patch`, `dynasty_delete`, `grid`,
+`stats`, `search`, and `backup`. Dates are always
 `YYYY-MM-DD`, and tool errors include the same stable `code` and human
 `message` fields as the REST API. If `delta serve` is unavailable, tool calls
 return a structured `server_unavailable` error pointing at `delta serve`.

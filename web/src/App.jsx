@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { createPortal } from "react-dom";
+
 import { Button } from "./components/ui/button";
 
 const NAV_ITEMS = [
@@ -7,7 +9,7 @@ const NAV_ITEMS = [
   { id: "stats", label: "Stats" },
   { id: "settings", label: "Settings" },
 ];
-const SETTINGS_SECTIONS = ["habits", "colors", "storage", "api", "backups"];
+const SETTINGS_SECTIONS = ["habits", "colors", "eras", "storage", "api", "backups"];
 
 const WEEKDAYS = ["Mo", "", "We", "", "Fr", "", ""];
 const PICKER_WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
@@ -571,6 +573,54 @@ function adjacentEntryDates(dates, date) {
   return { previous: earlier[earlier.length - 1] || null, next: later[0] || null };
 }
 
+// A small yes/no layered over whatever opened it, portalled to the body so no
+// page container can clip or out-stack it. Its key listener runs in the
+// capture phase and stops Escape there, so the popup or search box underneath
+// — which listen on window too — never see the key that dismissed the dialog.
+function ConfirmDialog({ message, confirmLabel = "Delete", onConfirm, onCancel }) {
+  const dialogRef = useRef(null);
+  const cancelRef = useRef(null);
+
+  useEffect(() => {
+    const previousFocus = document.activeElement;
+    cancelRef.current?.focus();
+    return () => previousFocus?.focus?.();
+  }, []);
+
+  useEffect(() => {
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        onCancel();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      // Focus stays on the dialog's own buttons while it is open.
+      const buttons = Array.from(dialogRef.current?.querySelectorAll("button") || []);
+      if (buttons.length === 0) return;
+      const index = buttons.indexOf(document.activeElement);
+      event.preventDefault();
+      buttons[(index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length].focus();
+    }
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [onCancel]);
+
+  return createPortal(
+    <div className="overlay confirm-overlay">
+      <div aria-label={message} aria-modal="true" className="confirm-dialog" ref={dialogRef} role="alertdialog">
+        <p>{message}</p>
+        <div className="confirm-dialog-actions">
+          <button className="wizard-button" onClick={onCancel} ref={cancelRef} type="button">Cancel</button>
+          <button className="wizard-button confirm-dialog-confirm" onClick={onConfirm} type="button">{confirmLabel}</button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 function EntryPopup({ date, onClose, onEdit, onDeleted, onNavigate }) {
   const [entry, setEntry] = useState(null);
   const [habits, setHabits] = useState([]);
@@ -581,6 +631,7 @@ function EntryPopup({ date, onClose, onEdit, onDeleted, onNavigate }) {
   const [habitsError, setHabitsError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [deleting, setDeleting] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [copied, setCopied] = useState(false);
   const [entryDates, setEntryDates] = useState(null);
 
@@ -660,6 +711,7 @@ function EntryPopup({ date, onClose, onEdit, onDeleted, onNavigate }) {
   }, [onClose]);
 
   async function deleteEntry() {
+    setConfirmingDelete(false);
     if (deleting || loading || !entry) return;
     setDeleting(true);
     setError("");
@@ -783,11 +835,12 @@ function EntryPopup({ date, onClose, onEdit, onDeleted, onNavigate }) {
               {copied && <span className="entry-popup-copied">copied</span>}
               <button className="wizard-button" disabled={loading || !entry} onClick={exportEntry} type="button">Export</button>
             </span>
-            <button className="wizard-button entry-popup-delete" disabled={deleting || loading || !entry} onClick={deleteEntry} type="button">{deleting ? "Deleting…" : "Delete"}</button>
+            <button className="wizard-button entry-popup-delete" disabled={deleting || loading || !entry} onClick={() => setConfirmingDelete(true)} type="button">{deleting ? "Deleting…" : "Delete"}</button>
             <Button className="wizard-button primary" disabled={loading || !entry} onClick={() => onEdit(date)} type="button">Edit</Button>
           </div>
         </footer>
       </div>
+      {confirmingDelete && <ConfirmDialog message={`Delete entry for ${date}?`} onCancel={() => setConfirmingDelete(false)} onConfirm={() => void deleteEntry()} />}
     </div>
   );
 }
@@ -1342,7 +1395,12 @@ function EntryWizard({ initialDate, onClose }) {
             {picker && <MonthPicker entryDates={entryDates} onClose={() => setPicker(null)} onNavigate={setPicker} onSelect={selectDate} picker={picker} selectedDate={date} />}
           </aside>
           <section className="wizard-pane" onKeyDown={onPaneKeyDown} ref={paneRef}>
-            {currentStep.title && <h2>{currentStep.title} {currentStep.hint && <em>{currentStep.hint}</em>}</h2>}
+            {currentStep.title && (
+              <h2>
+                {currentStep.title} {currentStep.hint && <em>{currentStep.hint}</em>}
+                {step === FREEFORM_STEP && <span className="wizard-character-count">{Array.from(entry.text).length.toLocaleString()} chars</span>}
+              </h2>
+            )}
             {renderStep()}
             {error && <p className="wizard-error">{error}</p>}
           </section>
@@ -1476,13 +1534,34 @@ function markerColor(day) {
   return PIXEL_COLORS[day?.pixel] || undefined;
 }
 
-// The two hold-modes replace the view's ramp rather than layering on it: j
+// The hold keys and, for the two that paint a list, which list they paint.
+const HOLD_KEYS = ["p", "j", "e", "d"];
+const HOLD_KINDS = { e: "eras", d: "dynasties" };
+const ERA_KIND_NOUNS = { eras: "era", dynasties: "dynasty" };
+
+function sortByStartDescending(items) {
+  return [...items].sort((a, b) => (a.start_date < b.start_date ? 1 : a.start_date > b.start_date ? -1 : 0));
+}
+
+// The era or dynasty a date belongs to. The grid's own id is preferred; the
+// date ranges cover days the grid response did not label (an older server, a
+// grid fetched before the list changed). An open end means ongoing.
+function eraForDay(items, id, date) {
+  return items.find((item) => item.id === id)
+    || items.find((item) => item.start_date <= date && (item.end_date == null || item.end_date >= date));
+}
+
+// The hold-modes replace the view's ramp rather than layering on it: j
 // reduces the grid to journaled days — has_entry is too wide here, since
 // imported values give nearly every day an entry without any journal text —
 // and p paints phase colours over days that still lift for their journal.
-function gridPixel(day, view, { entriesOnly, habitColors, marker }) {
-  if (entriesOnly) return { className: journalOnlyClass(day) };
-  if (marker) return { className: journalOnlyClass(day), color: markerColor(day) };
+// e and d are a flat map of era or dynasty colours: entries, ratings and
+// journals play no part, and a day in no range keeps the empty colour.
+function gridPixel(day, view, { hold, habitColors, era, dynasty }) {
+  if (hold === "e") return { color: era?.color };
+  if (hold === "d") return { color: dynasty?.color };
+  if (hold === "j") return { className: journalOnlyClass(day) };
+  if (hold === "p") return { className: journalOnlyClass(day), color: markerColor(day) };
   return { className: pixelClass(day, view), color: pixelColor(day, view, habitColors) };
 }
 
@@ -1492,12 +1571,14 @@ function formatMetric(value, suffix = "") {
 
 function DayTooltip({ day, position }) {
   if (!day) return null;
+  const eraLine = [day.era && `era: ${day.era}`, day.dynasty && `dynasty: ${day.dynasty}`].filter(Boolean).join(" · ");
   // A future date has no metrics to report, so the tooltip is a date preview.
   if (day.future) {
     return (
       <div className="day-tooltip" role="tooltip" style={position}>
         <strong>{day.date}</strong>
         <span>not yet</span>
+        {eraLine && <span>{eraLine}</span>}
       </div>
     );
   }
@@ -1507,6 +1588,7 @@ function DayTooltip({ day, position }) {
       <strong>{day.date}</strong>
       <span>total {formatMetric(day.rating)} · body {formatMetric(day.body)} · mind {formatMetric(day.mind)} · spirit {formatMetric(day.spirit)}</span>
       <span>habits: {habit} · journal: {day.journal ? "yes" : "no"}</span>
+      {eraLine && <span>{eraLine}</span>}
     </div>
   );
 }
@@ -1517,7 +1599,7 @@ function DayTooltip({ day, position }) {
 const GRID_WEEKDAY_WIDTH = 26;
 const GRID_GAP = 2;
 
-function PixelGrid({ year, view, days = [], entriesOnly = false, habitColors, marker = false, onOpen }) {
+function PixelGrid({ year, view, days = [], hold = null, habitColors, eras = [], dynasties = [], onOpen }) {
   const { cells, monthMarks, weeks } = useMemo(() => calendarFor(year), [year]);
   const today = formatDate(new Date());
   const [measureRef, width] = useMeasuredWidth();
@@ -1570,8 +1652,11 @@ function PixelGrid({ year, view, days = [], entriesOnly = false, habitColors, ma
         ))}
         {cells.map(({ inYear, key }) => {
           const day = daysByDate.get(key);
-          const tooltipDay = inYear ? (key > today ? { date: key, future: true } : day) : null;
-          const { className, color } = gridPixel(day, view, { entriesOnly, habitColors, marker });
+          const era = eraForDay(eras, day?.era_id, key);
+          const dynasty = eraForDay(dynasties, day?.dynasty_id, key);
+          const tooltipBase = key > today ? { date: key, future: true } : day;
+          const tooltipDay = inYear && tooltipBase ? { ...tooltipBase, era: era?.name, dynasty: dynasty?.name } : null;
+          const { className, color } = gridPixel(day, view, { hold, habitColors, era, dynasty });
           return (
           <button
             aria-label={inYear ? key : "outside selected year"}
@@ -1716,12 +1801,30 @@ function SearchDropdown({ onOpen, inputRef }) {
   );
 }
 
-// The grid data, the view toggle and the marker overlay all live in App: the
+// Names the colours while e or d is held. Hangs off the sticky toolbar, just
+// left of the search box and out of the pointer's way, so it stays put while
+// the grids scroll and neither moves the grid nor eats a hover.
+function EraLegend({ kind, items }) {
+  return (
+    <aside aria-label={`${kind} legend`} className="era-legend">
+      <span className="section-label">{kind}</span>
+      {items.length === 0 && <span className="era-legend-empty">none yet</span>}
+      {items.map((item) => (
+        <span className="era-legend-row" key={item.id}>
+          <span aria-hidden="true" className="entry-pixel" style={{ backgroundColor: item.color }} />
+          <span>{item.name}</span>
+        </span>
+      ))}
+    </aside>
+  );
+}
+
+// The grid data, the view toggle and the hold-modes all live in App: the
 // status bar needs the summary on every page and the shortcuts must reach the
 // view toggle while this page is unmounted. Every recorded year renders as
 // its own grid, newest on top; only the App-year grid comes preloaded, the
 // rest are fetched here.
-function GridPage({ year, onOpen, grid, error, view, setView, entriesOnly, habitColors, marker, searchInputRef, gridRefresh }) {
+function GridPage({ year, onOpen, grid, error, view, setView, hold, habitColors, eras, dynasties, searchInputRef, gridRefresh }) {
   const years = useMemo(() => [...(grid?.years || [year])].sort((a, b) => b - a), [grid, year]);
   const yearsKey = years.join(",");
   const [extraDays, setExtraDays] = useState({});
@@ -1749,6 +1852,7 @@ function GridPage({ year, onOpen, grid, error, view, setView, entriesOnly, habit
   return (
     <>
       <div className="toolbar">
+        {HOLD_KINDS[hold] && <EraLegend items={HOLD_KINDS[hold] === "eras" ? eras : dynasties} kind={HOLD_KINDS[hold]} />}
         <SearchDropdown inputRef={searchInputRef} onOpen={onOpen} />
         <div className="segmented" role="group" aria-label="Grid view">
           <button className={view === "rating" ? "on" : ""} onClick={() => setView("rating")} type="button">
@@ -1770,9 +1874,10 @@ function GridPage({ year, onOpen, grid, error, view, setView, entriesOnly, habit
             <h2 className="year-grid-label">{item}</h2>
             <PixelGrid
               days={item === year ? grid?.days : extraDays[item]}
-              entriesOnly={entriesOnly}
+              dynasties={dynasties}
+              eras={eras}
               habitColors={habitColors}
-              marker={marker}
+              hold={hold}
               onOpen={onOpen}
               view={view}
               year={item}
@@ -1955,6 +2060,31 @@ function StatsViewToggle({ view, setView }) {
   );
 }
 
+// Relative change against last year: always signed, one decimal. A null change
+// — nothing to compare against — renders nothing at all.
+function StatChange({ value, bracketed = false }) {
+  if (value == null) return null;
+  const rounded = Number(value.toFixed(1));
+  const tone = rounded > 0 ? " up" : rounded < 0 ? " down" : "";
+  const text = `${rounded < 0 ? "−" : "+"}${Math.abs(rounded).toFixed(1)}%`;
+  return <span className={`stats-change${tone}`}>{bracketed ? ` (${text})` : text}</span>;
+}
+
+function signedCount(value) {
+  return `${value < 0 ? "−" : "+"}${Math.abs(value).toLocaleString()}`;
+}
+
+// The line under the year's character count: where the year stands against
+// the record year, or against the year before once it is over.
+function charactersCaption(record) {
+  if (!record) return null;
+  if (record.state === "behind") return `${(record.per_day ?? 0).toLocaleString()}/day to break record (${record.record_year})`;
+  if (record.state === "ahead") return `${signedCount(record.difference ?? 0)} over record (${record.record_year})`;
+  if (record.state === "past") return `${signedCount(record.difference ?? 0)} vs ${record.previous_year}`;
+  if (record.state === "record") return "record year";
+  return null;
+}
+
 function StatsPage({ habitColors, year, setYear }) {
   const [stats, setStats] = useState(null);
   const [error, setError] = useState("");
@@ -1990,6 +2120,8 @@ function StatsPage({ habitColors, year, setYear }) {
   const totalAverage = stats?.averages?.total;
   const habitAverage = stats?.averages?.habit_score;
   const workAverage = stats?.averages?.work_hours;
+  const changes = stats?.changes;
+  const recordCaption = charactersCaption(stats?.characters_record);
 
   return (
     <>
@@ -2015,14 +2147,14 @@ function StatsPage({ habitColors, year, setYear }) {
           </section>
           <section className="stats-tile">
             <span className="section-label">characters in {year}</span>
-            <span className="stats-value">{(stats?.characters ?? 0).toLocaleString()}</span>
-            <span className="stats-caption">freeform prose</span>
+            <span className="stats-value">{(stats?.characters ?? 0).toLocaleString()}<StatChange value={changes?.characters} /></span>
+            {recordCaption && <span className="stats-caption">{recordCaption}</span>}
           </section>
           <section className="stats-tile">
             <span className="section-label">averages · {year}</span>
-            <div className="stats-detail-row"><span>Total rating</span><strong>{totalAverage == null ? "—" : totalAverage.toFixed(2)}</strong></div>
-            <div className="stats-detail-row"><span>Habit score</span><strong>{habitAverage == null ? "—" : formatPercent(habitAverage)}</strong></div>
-            <div className="stats-detail-row"><span>Work hours</span><strong>{workAverage == null ? "—" : formatHours(workAverage)}</strong></div>
+            <div className="stats-detail-row"><span>Total rating</span><strong>{totalAverage == null ? "—" : totalAverage.toFixed(2)}<StatChange bracketed value={changes?.total} /></strong></div>
+            <div className="stats-detail-row"><span>Habit score</span><strong>{habitAverage == null ? "—" : formatPercent(habitAverage)}<StatChange bracketed value={changes?.habit_score} /></strong></div>
+            <div className="stats-detail-row"><span>Work hours</span><strong>{workAverage == null ? "—" : formatHours(workAverage)}<StatChange bracketed value={changes?.work_hours} /></strong></div>
           </section>
         </div>
         <section className="stats-section">
@@ -2109,7 +2241,199 @@ function colorPayload(draft) {
   };
 }
 
-function SettingsPage({ navigate, section, onActiveHabitCountChange, onColorsChange, onLastBackupChange }) {
+// Starting colours for new eras and dynasties, rotated so successive adds
+// differ; every one of them can be repicked freely.
+const ERA_DEFAULT_COLORS = ["#4da3ff", "#b388ff", "#ff7849", "#35d0ba", "#ffc93c", "#ff5c8a", "#9be15d", "#8d99ae"];
+
+function eraRangeLabel(item) {
+  return `${item.start_date} → ${item.end_date || "ongoing"}`;
+}
+
+// One era or dynasty as inputs — a saved row being edited or a new row that
+// is not stored yet. Nothing leaves the row until Save; a rejected save (an
+// overlap, a duplicate name) is reported here and the row stays open.
+function EraEditor({ noun, initial, onSave, onCancel }) {
+  const [draft, setDraft] = useState(initial);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  function update(field, value) {
+    setDraft((current) => ({ ...current, [field]: value }));
+  }
+
+  async function save() {
+    if (saving) return;
+    if (!draft.start_date) {
+      setError("start date is required");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      // An empty end date is an ongoing range, which the API spells null.
+      await onSave({ name: draft.name.trim(), color: draft.color, start_date: draft.start_date, end_date: draft.end_date || null });
+    } catch (requestError) {
+      setError(requestError.message);
+      setSaving(false);
+    }
+  }
+
+  function onKeyDown(event) {
+    if (event.key === "Enter" && event.target.tagName === "INPUT") {
+      event.preventDefault();
+      void save();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+    }
+  }
+
+  return (
+    <div className="era-editor" onKeyDown={onKeyDown}>
+      <div className="era-editor-fields">
+        <label className="settings-color-swatch">
+          <input aria-label={`${noun} color`} onChange={(event) => update("color", event.target.value)} type="color" value={draft.color} />
+        </label>
+        <label className="era-editor-name">
+          <span>name</span>
+          <input aria-label={`${noun} name`} autoFocus onChange={(event) => update("name", event.target.value)} spellCheck="false" value={draft.name} />
+        </label>
+        <label>
+          <span>start</span>
+          <input aria-label={`${noun} start date`} onChange={(event) => update("start_date", event.target.value)} type="date" value={draft.start_date} />
+        </label>
+        <label>
+          <span>end · empty = ongoing</span>
+          <input aria-label={`${noun} end date`} onChange={(event) => update("end_date", event.target.value)} type="date" value={draft.end_date} />
+        </label>
+      </div>
+      {error && <p className="settings-error">{error}</p>}
+      <div className="era-editor-actions">
+        <button className="settings-action-button" disabled={saving} onClick={onCancel} type="button">Cancel</button>
+        <button className="settings-action-button primary" disabled={saving} onClick={() => void save()} type="button">Save</button>
+      </div>
+    </div>
+  );
+}
+
+function EraColumn({ kind, items, onKindChange }) {
+  const noun = ERA_KIND_NOUNS[kind];
+  const [newRows, setNewRows] = useState([]);
+  const [editingIds, setEditingIds] = useState([]);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [error, setError] = useState("");
+  const nextRowKey = useRef(0);
+
+  // The stored list is re-read after every change, so the column always shows
+  // the server's order: newest start date on top.
+  const reload = useCallback(async () => {
+    try {
+      await onKindChange(kind);
+    } catch (requestError) {
+      if (requestError.name !== "AbortError") setError(requestError.message);
+    }
+  }, [kind, onKindChange]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  function send(endpoint, method, payload) {
+    return apiRequest(endpoint, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: payload ? JSON.stringify(payload) : undefined,
+    });
+  }
+
+  function addRow() {
+    const color = ERA_DEFAULT_COLORS[(items.length + newRows.length) % ERA_DEFAULT_COLORS.length];
+    nextRowKey.current += 1;
+    setNewRows((current) => [{ key: nextRowKey.current, name: "", color, start_date: "", end_date: "" }, ...current]);
+  }
+
+  async function saveNew(key, payload) {
+    setError("");
+    await send(`/api/${kind}`, "POST", payload);
+    setNewRows((current) => current.filter((row) => row.key !== key));
+    await reload();
+  }
+
+  async function saveEdit(item, payload) {
+    setError("");
+    const changed = Object.fromEntries(Object.entries(payload).filter(([field, value]) => value !== (item[field] ?? null)));
+    if (Object.keys(changed).length > 0) await send(`/api/${kind}/${item.id}`, "PATCH", changed);
+    setEditingIds((current) => current.filter((id) => id !== item.id));
+    await reload();
+  }
+
+  async function deleteItem(item) {
+    setPendingDelete(null);
+    setError("");
+    try {
+      await send(`/api/${kind}/${item.id}`, "DELETE");
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+    setEditingIds((current) => current.filter((id) => id !== item.id));
+    await reload();
+  }
+
+  return (
+    <section aria-label={kind} className="era-column">
+      <div className="settings-panel-heading">
+        <h2>{kind[0].toUpperCase() + kind.slice(1)}</h2>
+        <button className="settings-ghost-button" onClick={addRow} type="button">+ add {noun}</button>
+      </div>
+      {error && <p className="settings-error">{error}</p>}
+      <div className="era-list">
+        {newRows.map((row) => (
+          <EraEditor
+            initial={row}
+            key={`new-${row.key}`}
+            noun={noun}
+            onCancel={() => setNewRows((current) => current.filter((item) => item.key !== row.key))}
+            onSave={(payload) => saveNew(row.key, payload)}
+          />
+        ))}
+        {items.map((item) => (editingIds.includes(item.id) ? (
+          <EraEditor
+            initial={{ name: item.name, color: item.color, start_date: item.start_date, end_date: item.end_date || "" }}
+            key={item.id}
+            noun={noun}
+            onCancel={() => setEditingIds((current) => current.filter((id) => id !== item.id))}
+            onSave={(payload) => saveEdit(item, payload)}
+          />
+        ) : (
+          <div className="era-row" key={item.id}>
+            <span aria-hidden="true" className="entry-pixel" style={{ backgroundColor: item.color }} />
+            <div className="era-row-text">
+              <span className="era-row-name">{item.name}</span>
+              <span className="era-row-range">{eraRangeLabel(item)}</span>
+            </div>
+            <div className="habit-tools">
+              <button className="settings-text-button" onClick={() => setEditingIds((current) => [...current, item.id])} type="button">edit</button>
+              <button className="settings-text-button danger" onClick={() => setPendingDelete(item)} type="button">delete</button>
+            </div>
+          </div>
+        )))}
+        {items.length === 0 && newRows.length === 0 && <p className="settings-muted">no {kind} yet</p>}
+      </div>
+      {pendingDelete && <ConfirmDialog message={`Delete ${noun} "${pendingDelete.name}"?`} onCancel={() => setPendingDelete(null)} onConfirm={() => void deleteItem(pendingDelete)} />}
+    </section>
+  );
+}
+
+function ErasPanel({ lists, onKindChange }) {
+  return (
+    <div className="era-columns">
+      <EraColumn items={lists.dynasties} kind="dynasties" onKindChange={onKindChange} />
+      <EraColumn items={lists.eras} kind="eras" onKindChange={onKindChange} />
+    </div>
+  );
+}
+
+function SettingsPage({ navigate, section, eraLists, onActiveHabitCountChange, onColorsChange, onEraKindChange, onLastBackupChange }) {
   const [habits, setHabits] = useState([]);
   const [newHabitName, setNewHabitName] = useState("");
   const [editingHabitId, setEditingHabitId] = useState(null);
@@ -2933,6 +3257,7 @@ function SettingsPage({ navigate, section, onActiveHabitCountChange, onColorsCha
   function selectedPanel() {
     if (section === "habits") return habitsPanel();
     if (section === "colors") return colorsPanel();
+    if (section === "eras") return <ErasPanel lists={eraLists} onKindChange={onEraKindChange} />;
     if (section === "storage") return storagePanel();
     if (section === "api") return apiPanel();
     return backupsPanel();
@@ -3003,7 +3328,7 @@ function StatusBar({ page, summary, year, activeHabitCount, lastBackup }) {
       )}
       {version && <span className="status-version">{version}</span>}
       <span className="key-hints">
-        <kbd>/</kbd> search · <kbd>n</kbd> new entry · <kbd>t</kbd> toggle view · <kbd>p</kbd> hold for phases · <kbd>j</kbd> hold for entries
+        <kbd>/</kbd> search · <kbd>n</kbd> new entry · <kbd>t</kbd> toggle view · hold <kbd>p</kbd> phases · <kbd>j</kbd> entries · <kbd>e</kbd> eras · <kbd>d</kbd> dynasties
       </span>
     </footer>
   );
@@ -3107,8 +3432,9 @@ function App() {
   const [grid, setGrid] = useState(null);
   const [gridError, setGridError] = useState("");
   const [view, setView] = useState("rating");
-  const [marker, setMarker] = useState(false);
-  const [entriesOnly, setEntriesOnly] = useState(false);
+  // Hold keys currently down, oldest first: the last one pressed is the mode.
+  const [heldKeys, setHeldKeys] = useState([]);
+  const [eraLists, setEraLists] = useState({ eras: [], dynasties: [] });
   const [wizardDate, setWizardDate] = useState(null);
   const [popupDate, setPopupDate] = useState(null);
   const [gridRefresh, setGridRefresh] = useState(0);
@@ -3118,6 +3444,32 @@ function App() {
   const searchInputRef = useRef(null);
   const pendingSearchFocus = useRef(false);
   const modalOpen = Boolean(wizardDate || popupDate);
+  const hold = heldKeys[heldKeys.length - 1] || null;
+
+  // Eras and dynasties live here so the grid repaints the moment settings
+  // changes one. A change refetches the grid too: its days carry the ids.
+  const reloadEraKind = useCallback(async (kind, signal) => {
+    const body = await apiRequest(`/api/${kind}`, signal ? { signal } : {}, {
+      fallbackMessage: `${kind} request failed`,
+      fallbackCode: `${kind}_error`,
+    });
+    setEraLists((current) => ({ ...current, [kind]: sortByStartDescending(Array.isArray(body) ? body : []) }));
+  }, []);
+
+  const changeEraKind = useCallback(async (kind) => {
+    await reloadEraKind(kind);
+    setGridRefresh((value) => value + 1);
+  }, [reloadEraKind]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    Object.values(HOLD_KINDS).forEach((kind) => {
+      reloadEraKind(kind, controller.signal).catch((requestError) => {
+        if (requestError.name !== "AbortError") console.warn(`${kind} request failed`, requestError.message);
+      });
+    });
+    return () => controller.abort();
+  }, [reloadEraKind]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -3199,12 +3551,9 @@ function App() {
         return;
       }
       if (modalOpen || isTypingTarget(event.target)) return;
-      if (key === "p") {
-        setMarker(true);
-        return;
-      }
-      if (key === "j") {
-        setEntriesOnly(true);
+      if (HOLD_KEYS.includes(key)) {
+        // Key repeat re-sends a key that is already held; it keeps its place.
+        setHeldKeys((current) => (current.includes(key) ? current : [...current, key]));
         return;
       }
       if (event.repeat) return;
@@ -3223,12 +3572,11 @@ function App() {
       }
     }
     function onKeyUp(event) {
-      if (event.key === "p" || event.key === "P") setMarker(false);
-      if (event.key === "j" || event.key === "J") setEntriesOnly(false);
+      const key = event.key.toLowerCase();
+      if (HOLD_KEYS.includes(key)) setHeldKeys((current) => current.filter((held) => held !== key));
     }
     function onBlur() {
-      setMarker(false);
-      setEntriesOnly(false);
+      setHeldKeys([]);
     }
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
@@ -3278,12 +3626,13 @@ function App() {
       <div className="page-layout">
         {page === "grid" && (
           <GridPage
-            entriesOnly={entriesOnly}
+            dynasties={eraLists.dynasties}
+            eras={eraLists.eras}
             error={gridError}
             grid={grid}
             gridRefresh={gridRefresh}
             habitColors={habitColors}
-            marker={marker}
+            hold={hold}
             onOpen={openDate}
             searchInputRef={searchInputRef}
             setView={setView}
@@ -3292,7 +3641,7 @@ function App() {
           />
         )}
         {page === "stats" && <StatsPage habitColors={habitColors} setYear={setYear} year={year} />}
-        {page === "settings" && <SettingsPage navigate={navigate} onActiveHabitCountChange={setActiveHabitCount} onColorsChange={setColors} onLastBackupChange={setLastBackup} section={settingsSection} />}
+        {page === "settings" && <SettingsPage navigate={navigate} onActiveHabitCountChange={setActiveHabitCount} onColorsChange={setColors} eraLists={eraLists} onEraKindChange={changeEraKind} onLastBackupChange={setLastBackup} section={settingsSection} />}
       </div>
       <StatusBar activeHabitCount={activeHabitCount} lastBackup={lastBackup} page={page} summary={grid?.summary || null} year={grid?.year ?? year} />
       {popupDate && <EntryPopup date={popupDate} onClose={closePopup} onDeleted={deletePopup} onEdit={editPopup} onNavigate={setPopupDate} />}

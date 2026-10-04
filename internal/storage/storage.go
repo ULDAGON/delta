@@ -220,6 +220,24 @@ var migrations = []Migration{
 			ALTER TABLE entries ADD COLUMN work_hours REAL`)
 		return err
 	},
+	func(ctx context.Context, tx *sql.Tx) error {
+		// Eras and dynasties share one shape and never interact, so they live
+		// in one table split by kind. Name uniqueness and range overlap are
+		// enforced per kind by the service, not by the schema.
+		_, err := tx.ExecContext(ctx, `
+			CREATE TABLE IF NOT EXISTS periods (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				kind TEXT NOT NULL CHECK (kind IN ('era', 'dynasty')),
+				name TEXT NOT NULL,
+				color TEXT NOT NULL,
+				start_date TEXT NOT NULL,
+				end_date TEXT,
+				CHECK (end_date IS NULL OR start_date <= end_date)
+			);
+			CREATE INDEX IF NOT EXISTS periods_by_kind ON periods(kind, start_date);
+		`)
+		return err
+	},
 }
 
 func CurrentVersion() int { return len(migrations) }

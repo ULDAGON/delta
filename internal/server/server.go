@@ -294,6 +294,7 @@ func NewHandler(svc *service.Service, token string, options ...HandlerOption) ht
 	})
 	registerEntryRoutes(mux, svc)
 	registerHabitRoutes(mux, svc)
+	registerPeriodRoutes(mux, svc)
 	registerGridRoutes(mux, svc)
 	registerStatsRoutes(mux, svc)
 	registerSearchRoutes(mux, svc)
@@ -539,9 +540,9 @@ func writeError(w http.ResponseWriter, status int, err error) {
 func writeServiceError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch apperror.Code(err) {
-	case apperror.CodeWrongKey, apperror.CodeInvalidDate, apperror.CodeInvalidEntry, apperror.CodeInvalidHabit, apperror.CodeHabitNotActive, apperror.CodeInvalidGrid, apperror.CodeInvalidStats, apperror.CodeInvalidSetup, apperror.CodeInvalidUIColors, apperror.CodeUpgrade:
+	case apperror.CodeWrongKey, apperror.CodeInvalidDate, apperror.CodeInvalidEntry, apperror.CodeInvalidHabit, apperror.CodeHabitNotActive, apperror.CodeInvalidEra, apperror.CodeInvalidDynasty, apperror.CodeInvalidGrid, apperror.CodeInvalidStats, apperror.CodeInvalidSetup, apperror.CodeInvalidUIColors, apperror.CodeUpgrade:
 		status = http.StatusBadRequest
-	case apperror.CodeEntryNotFound, apperror.CodeHabitNotFound, apperror.CodeNotFound:
+	case apperror.CodeEntryNotFound, apperror.CodeHabitNotFound, apperror.CodeEraNotFound, apperror.CodeDynastyNotFound, apperror.CodeNotFound:
 		status = http.StatusNotFound
 	case apperror.CodeMethodNotAllowed:
 		status = http.StatusMethodNotAllowed

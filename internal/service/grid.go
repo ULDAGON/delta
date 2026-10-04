@@ -29,6 +29,10 @@ type GridDay struct {
 	ActiveHabits  int      `json:"active_habits"`
 	CheckedHabits int      `json:"checked_habits"`
 	Pixel         int      `json:"pixel"`
+	// EraID and DynastyID name the era and dynasty covering this date, on
+	// every day of the year whether or not it has an entry or lies ahead.
+	EraID     *int64 `json:"era_id"`
+	DynastyID *int64 `json:"dynasty_id"`
 }
 
 // GridSummary carries two horizons at once: the counts and averages of the
@@ -77,6 +81,15 @@ func (s *Service) Grid(ctx context.Context, year int, view string) (GridResponse
 	// Load all ranges once. Per-day activity is derived from this in-memory
 	// schedule instead of issuing one query for every calendar cell.
 	schedules, err := s.habitSchedules(ctx)
+	if err != nil {
+		return GridResponse{}, err
+	}
+
+	eras, err := listPeriods(ctx, s.Store.DB, PeriodEra)
+	if err != nil {
+		return GridResponse{}, err
+	}
+	dynasties, err := listPeriods(ctx, s.Store.DB, PeriodDynasty)
 	if err != nil {
 		return GridResponse{}, err
 	}
@@ -149,6 +162,8 @@ func (s *Service) Grid(ctx context.Context, year int, view string) (GridResponse
 			ActiveHabits:  habitDay.Active,
 			CheckedHabits: habitDay.Checked,
 			Pixel:         pixel,
+			EraID:         periodIDAt(eras, date),
+			DynastyID:     periodIDAt(dynasties, date),
 		})
 	}
 	if ratingCount > 0 {

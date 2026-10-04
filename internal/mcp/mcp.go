@@ -128,7 +128,7 @@ func newServer(client *client.Client) *protocol.Server {
 		return clientJSON(client, ctx, http.MethodPost, "/api/habits", body)
 	})
 	add("habit_patch", "Patch a habit name, order, validity ranges, or archive state.", habitPatchSchema, func(ctx context.Context, args map[string]json.RawMessage) (any, error) {
-		habitID, err := requiredID(args, "habit_id")
+		habitID, err := requiredID(args, "habit_id", apperror.CodeInvalidHabit)
 		if err != nil {
 			return nil, err
 		}
@@ -146,7 +146,7 @@ func newServer(client *client.Client) *protocol.Server {
 		return clientCheckoff(client, ctx, args, false)
 	})
 	add("habit_archive", "Archive a habit, closing its active range today.", habitIDSchema, func(ctx context.Context, args map[string]json.RawMessage) (any, error) {
-		habitID, err := requiredID(args, "habit_id")
+		habitID, err := requiredID(args, "habit_id", apperror.CodeInvalidHabit)
 		if err != nil {
 			return nil, err
 		}
@@ -154,7 +154,10 @@ func newServer(client *client.Client) *protocol.Server {
 		return clientJSON(client, ctx, http.MethodPatch, "/api/habits/"+strconv.FormatInt(habitID, 10), body)
 	})
 
-	add("grid", "Read the selected calendar year's rating or habit-score grid.", gridSchema, func(ctx context.Context, args map[string]json.RawMessage) (any, error) {
+	addPeriodTools(add, client, "era", "/api/eras", apperror.CodeInvalidEra)
+	addPeriodTools(add, client, "dynasty", "/api/dynasties", apperror.CodeInvalidDynasty)
+
+	add("grid", "Read the selected calendar year's rating or habit-score grid; each day carries its era_id and dynasty_id.", gridSchema, func(ctx context.Context, args map[string]json.RawMessage) (any, error) {
 		query, err := optionalIntAndStringQuery(args, "year", "view")
 		if err != nil {
 			return nil, err
@@ -187,12 +190,50 @@ func newServer(client *client.Client) *protocol.Server {
 	return server
 }
 
+// addPeriodTools registers the list/add/patch/delete tools of one period kind.
+// Eras and dynasties are identical apart from the tool prefix and REST root.
+func addPeriodTools(add func(name, description, schema string, handler func(context.Context, map[string]json.RawMessage) (any, error)), client *client.Client, kind, route, invalidCode string) {
+	idName := kind + "_id"
+	add(kind+"_list", "List every "+kind+" with its color and inclusive date range, newest start first.", emptySchema, func(ctx context.Context, _ map[string]json.RawMessage) (any, error) {
+		return clientGet(client, ctx, route)
+	})
+	add(kind+"_add", "Create one "+kind+": a named, coloured date range that must not overlap another "+kind+". Omit end_date while it is ongoing.", periodAddSchema, func(ctx context.Context, args map[string]json.RawMessage) (any, error) {
+		body, err := json.Marshal(args)
+		if err != nil {
+			return nil, apperror.Wrap(invalidCode, "invalid "+kind+" JSON", err)
+		}
+		return clientJSON(client, ctx, http.MethodPost, route, body)
+	})
+	add(kind+"_patch", "Patch the name, color, or dates of one "+kind+". A null end_date makes it ongoing; an omitted one leaves it unchanged.", periodPatchSchema(idName), func(ctx context.Context, args map[string]json.RawMessage) (any, error) {
+		id, err := requiredID(args, idName, invalidCode)
+		if err != nil {
+			return nil, err
+		}
+		delete(args, idName)
+		body, err := json.Marshal(args)
+		if err != nil {
+			return nil, apperror.Wrap(invalidCode, "invalid "+kind+" JSON", err)
+		}
+		return clientJSON(client, ctx, http.MethodPatch, route+"/"+strconv.FormatInt(id, 10), body)
+	})
+	add(kind+"_delete", "Delete one "+kind+" by its ID.", periodIDSchema(idName), func(ctx context.Context, args map[string]json.RawMessage) (any, error) {
+		id, err := requiredID(args, idName, invalidCode)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := clientJSON(client, ctx, http.MethodDelete, route+"/"+strconv.FormatInt(id, 10), nil); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true, idName: id}, nil
+	})
+}
+
 func clientCheckoff(client *client.Client, ctx context.Context, args map[string]json.RawMessage, checked bool) (any, error) {
 	date, err := requiredDate(args, "date")
 	if err != nil {
 		return nil, err
 	}
-	habitID, err := requiredID(args, "habit_id")
+	habitID, err := requiredID(args, "habit_id", apperror.CodeInvalidHabit)
 	if err != nil {
 		return nil, err
 	}
@@ -253,14 +294,14 @@ func requiredDate(args map[string]json.RawMessage, name string) (string, error) 
 	return requiredString(args, name, apperror.CodeInvalidDate)
 }
 
-func requiredID(args map[string]json.RawMessage, name string) (int64, error) {
+func requiredID(args map[string]json.RawMessage, name, code string) (int64, error) {
 	raw, ok := args[name]
 	if !ok {
-		return 0, apperror.New(apperror.CodeInvalidHabit, "habit_id is required")
+		return 0, apperror.New(code, name+" is required")
 	}
 	var value int64
 	if err := json.Unmarshal(raw, &value); err != nil || value <= 0 {
-		return 0, apperror.New(apperror.CodeInvalidHabit, "invalid habit_id")
+		return 0, apperror.New(code, "invalid "+name)
 	}
 	return value, nil
 }
@@ -416,6 +457,42 @@ const habitPatchSchema = `{
   "required":["habit_id"],
   "additionalProperties":false
 }`
+
+const periodAddSchema = `{
+  "type":"object",
+  "properties":{
+    "name":{"type":"string","description":"Unique within its kind, compared case-insensitively"},
+    "color":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$","description":"Hex color in #rrggbb format"},
+    "start_date":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}$","description":"First day, inclusive"},
+    "end_date":{"type":["string","null"],"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}$","description":"Last day, inclusive; null or omitted while ongoing"}
+  },
+  "required":["name","color","start_date"],
+  "additionalProperties":false
+}`
+
+func periodIDSchema(idName string) string {
+	return `{
+  "type":"object",
+  "properties":{"` + idName + `":{"type":"integer","minimum":1}},
+  "required":["` + idName + `"],
+  "additionalProperties":false
+}`
+}
+
+func periodPatchSchema(idName string) string {
+	return `{
+  "type":"object",
+  "properties":{
+    "` + idName + `":{"type":"integer","minimum":1},
+    "name":{"type":"string"},
+    "color":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$"},
+    "start_date":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+    "end_date":{"type":["string","null"],"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}$","description":"null makes it ongoing; omitted leaves it unchanged"}
+  },
+  "required":["` + idName + `"],
+  "additionalProperties":false
+}`
+}
 
 const gridSchema = `{
   "type":"object",
