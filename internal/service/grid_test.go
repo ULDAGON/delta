@@ -246,3 +246,50 @@ func assertAverage(t *testing.T, label string, got, want *float64) {
 func intPointer(value int) *int { return &value }
 
 func floatPointer(value float64) *float64 { return &value }
+
+func TestGridCarriesDayCharactersAndDiaryWideMaximum(t *testing.T) {
+	habitToday = func() string { return "2099-06-15" }
+	t.Cleanup(func() { habitToday = localToday })
+
+	store, err := storage.Open(context.Background(), filepath.Join(t.TempDir(), "diary.db"), strings.Repeat("b2", storage.KeyBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := storage.Migrate(context.Background(), store.DB); err != nil {
+		t.Fatal(err)
+	}
+	svc := New(store)
+	for date, text := range map[string]string{
+		"2098-03-01": strings.Repeat("ä", 40),
+		"2099-02-01": "twelve chars",
+		"2099-02-02": "",
+		"2099-12-01": strings.Repeat("x", 500),
+	} {
+		if _, err := svc.UpsertEntry(context.Background(), date, EntryPatch{
+			Text:    OptionalString{Set: true, Value: text},
+			Ratings: RatingsPatch{Total: OptionalRating{Set: true, Value: intPointer(3)}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	grid, err := svc.Grid(context.Background(), 2099, GridViewRating)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The longest past day sets the scale even from another year; a future
+	// entry is invisible to the grid and must not stretch it.
+	if grid.MaxCharacters != 40 {
+		t.Fatalf("max characters = %d, want 40", grid.MaxCharacters)
+	}
+	byDate := make(map[string]GridDay, len(grid.Days))
+	for _, day := range grid.Days {
+		byDate[day.Date] = day
+	}
+	for date, want := range map[string]int{"2099-02-01": 12, "2099-02-02": 0, "2099-02-03": 0, "2099-12-01": 0} {
+		if got := byDate[date].Characters; got != want {
+			t.Fatalf("%s characters = %d, want %d", date, got, want)
+		}
+	}
+}

@@ -29,6 +29,9 @@ type GridDay struct {
 	ActiveHabits  int      `json:"active_habits"`
 	CheckedHabits int      `json:"checked_habits"`
 	Pixel         int      `json:"pixel"`
+	// Characters is the rune count of the day's freeform text, zero for a
+	// day without journal text.
+	Characters int `json:"characters"`
 	// EraID and DynastyID name the era and dynasty covering this date, on
 	// every day of the year whether or not it has an entry or lies ahead.
 	EraID     *int64 `json:"era_id"`
@@ -48,13 +51,17 @@ type GridSummary struct {
 }
 
 type GridResponse struct {
-	Year         int         `json:"year"`
-	View         string      `json:"view"`
-	Days         []GridDay   `json:"days"`
-	Summary      GridSummary `json:"summary"`
-	EarliestYear *int        `json:"earliest_year"`
-	CurrentYear  int         `json:"current_year"`
-	Years        []int       `json:"years"`
+	Year    int         `json:"year"`
+	View    string      `json:"view"`
+	Days    []GridDay   `json:"days"`
+	Summary GridSummary `json:"summary"`
+	// MaxCharacters is the longest freeform text of any day in the whole
+	// diary, not just the requested year, so every year's character heatmap
+	// shares one scale.
+	MaxCharacters int   `json:"max_characters"`
+	EarliestYear  *int  `json:"earliest_year"`
+	CurrentYear   int   `json:"current_year"`
+	Years         []int `json:"years"`
 }
 
 // Grid derives all displayed values from entries and habit validity ranges at
@@ -109,6 +116,14 @@ func (s *Service) Grid(ctx context.Context, year int, view string) (GridResponse
 		CurrentYear:  currentYear,
 		Years:        years,
 	}
+	for _, entry := range allEntries {
+		if entry.Date > today {
+			continue
+		}
+		if characters := len([]rune(entry.Text)); characters > result.MaxCharacters {
+			result.MaxCharacters = characters
+		}
+	}
 	var ratingTotal, ratingCount float64
 	var habitTotal float64
 	var habitDays int
@@ -139,7 +154,7 @@ func (s *Service) Grid(ctx context.Context, year int, view string) (GridResponse
 		}
 
 		var rating, body, mind, spirit *int
-		var pixel int
+		var pixel, characters int
 		if hasStoredEntry {
 			rating, body, mind, spirit = entry.Ratings.Total, entry.Ratings.Body, entry.Ratings.Mind, entry.Ratings.Spirit
 			if rating != nil {
@@ -147,7 +162,8 @@ func (s *Service) Grid(ctx context.Context, year int, view string) (GridResponse
 				ratingCount++
 			}
 			result.Summary.Entries++
-			result.Summary.Characters += len([]rune(entry.Text))
+			characters = len([]rune(entry.Text))
+			result.Summary.Characters += characters
 			pixel = entry.Pixel
 		}
 		result.Days = append(result.Days, GridDay{
@@ -162,6 +178,7 @@ func (s *Service) Grid(ctx context.Context, year int, view string) (GridResponse
 			ActiveHabits:  habitDay.Active,
 			CheckedHabits: habitDay.Checked,
 			Pixel:         pixel,
+			Characters:    characters,
 			EraID:         periodIDAt(eras, date),
 			DynastyID:     periodIDAt(dynasties, date),
 		})

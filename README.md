@@ -243,6 +243,9 @@ are only compared within one kind.
 Every day in the `GET /api/grid` response carries `era_id` and `dynasty_id`:
 the ID of the item covering that date, or `null`. They are present on every day
 of the requested year, including days without an entry and future days.
+Each day also carries `characters`, the length of its freeform text, and the
+response carries `max_characters`, the longest day in the whole diary, as the
+shared scale for the character heatmap.
 
 ## Habit CLI
 

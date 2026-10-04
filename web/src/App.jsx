@@ -821,7 +821,7 @@ function EntryPopup({ date, onClose, onEdit, onDeleted, onNavigate }) {
             )}
           </aside>
           <section className="entry-popup-right">
-            <h2>freeform</h2>
+            <h2>freeform{entry ? ` · ${characterCount.toLocaleString()} chars` : ""}</h2>
             {loading && <p className="wizard-muted">loading entry…</p>}
             {!loading && error && <p className="wizard-error">{error}</p>}
             {!loading && !error && entry && <p className="entry-popup-freeform">{entry.text || "—"}</p>}
@@ -1535,7 +1535,7 @@ function markerColor(day) {
 }
 
 // The hold keys and, for the two that paint a list, which list they paint.
-const HOLD_KEYS = ["p", "j", "e", "d"];
+const HOLD_KEYS = ["p", "j", "e", "d", "c"];
 const HOLD_KINDS = { e: "eras", d: "dynasties" };
 const ERA_KIND_NOUNS = { eras: "era", dynasties: "dynasty" };
 
@@ -1551,13 +1551,24 @@ function eraForDay(items, id, date) {
     || items.find((item) => item.start_date <= date && (item.end_date == null || item.end_date >= date));
 }
 
+// The character heatmap: a day's freeform length against the longest day in
+// the diary, from the empty colour up to a faint blue. The square root keeps
+// ordinary days readable when one marathon entry sets the maximum.
+function heatColor(characters, maxCharacters) {
+  if (!characters || !maxCharacters) return undefined;
+  const share = Math.sqrt(Math.min(1, characters / maxCharacters));
+  return `color-mix(in oklab, var(--empty), var(--heat-max) ${Math.round(share * 100)}%)`;
+}
+
 // The hold-modes replace the view's ramp rather than layering on it: j
 // reduces the grid to journaled days — has_entry is too wide here, since
 // imported values give nearly every day an entry without any journal text —
 // and p paints phase colours over days that still lift for their journal.
 // e and d are a flat map of era or dynasty colours: entries, ratings and
-// journals play no part, and a day in no range keeps the empty colour.
-function gridPixel(day, view, { hold, habitColors, era, dynasty }) {
+// journals play no part, and a day in no range keeps the empty colour. c is
+// the character heatmap, where a day without journal text stays empty.
+function gridPixel(day, view, { hold, habitColors, era, dynasty, maxCharacters }) {
+  if (hold === "c") return { color: heatColor(day?.characters, maxCharacters) };
   if (hold === "e") return { color: era?.color };
   if (hold === "d") return { color: dynasty?.color };
   if (hold === "j") return { className: journalOnlyClass(day) };
@@ -1587,7 +1598,7 @@ function DayTooltip({ day, position }) {
     <div className="day-tooltip" role="tooltip" style={position}>
       <strong>{day.date}</strong>
       <span>total {formatMetric(day.rating)} · body {formatMetric(day.body)} · mind {formatMetric(day.mind)} · spirit {formatMetric(day.spirit)}</span>
-      <span>habits: {habit} · journal: {day.journal ? "yes" : "no"}</span>
+      <span>habits: {habit} · journal: {day.journal ? (day.characters ? `${day.characters.toLocaleString()} chars` : "yes") : "no"}</span>
       {eraLine && <span>{eraLine}</span>}
     </div>
   );
@@ -1599,7 +1610,7 @@ function DayTooltip({ day, position }) {
 const GRID_WEEKDAY_WIDTH = 26;
 const GRID_GAP = 2;
 
-function PixelGrid({ year, view, days = [], hold = null, habitColors, eras = [], dynasties = [], onOpen }) {
+function PixelGrid({ year, view, days = [], hold = null, habitColors, eras = [], dynasties = [], maxCharacters = 0, onOpen }) {
   const { cells, monthMarks, weeks } = useMemo(() => calendarFor(year), [year]);
   const today = formatDate(new Date());
   const [measureRef, width] = useMeasuredWidth();
@@ -1656,7 +1667,7 @@ function PixelGrid({ year, view, days = [], hold = null, habitColors, eras = [],
           const dynasty = eraForDay(dynasties, day?.dynasty_id, key);
           const tooltipBase = key > today ? { date: key, future: true } : day;
           const tooltipDay = inYear && tooltipBase ? { ...tooltipBase, era: era?.name, dynasty: dynasty?.name } : null;
-          const { className, color } = gridPixel(day, view, { hold, habitColors, era, dynasty });
+          const { className, color } = gridPixel(day, view, { hold, habitColors, era, dynasty, maxCharacters });
           return (
           <button
             aria-label={inYear ? key : "outside selected year"}
@@ -1801,24 +1812,6 @@ function SearchDropdown({ onOpen, inputRef }) {
   );
 }
 
-// Names the colours while e or d is held. Hangs off the sticky toolbar, just
-// left of the search box and out of the pointer's way, so it stays put while
-// the grids scroll and neither moves the grid nor eats a hover.
-function EraLegend({ kind, items }) {
-  return (
-    <aside aria-label={`${kind} legend`} className="era-legend">
-      <span className="section-label">{kind}</span>
-      {items.length === 0 && <span className="era-legend-empty">none yet</span>}
-      {items.map((item) => (
-        <span className="era-legend-row" key={item.id}>
-          <span aria-hidden="true" className="entry-pixel" style={{ backgroundColor: item.color }} />
-          <span>{item.name}</span>
-        </span>
-      ))}
-    </aside>
-  );
-}
-
 // The grid data, the view toggle and the hold-modes all live in App: the
 // status bar needs the summary on every page and the shortcuts must reach the
 // view toggle while this page is unmounted. Every recorded year renders as
@@ -1852,7 +1845,6 @@ function GridPage({ year, onOpen, grid, error, view, setView, hold, habitColors,
   return (
     <>
       <div className="toolbar">
-        {HOLD_KINDS[hold] && <EraLegend items={HOLD_KINDS[hold] === "eras" ? eras : dynasties} kind={HOLD_KINDS[hold]} />}
         <SearchDropdown inputRef={searchInputRef} onOpen={onOpen} />
         <div className="segmented" role="group" aria-label="Grid view">
           <button className={view === "rating" ? "on" : ""} onClick={() => setView("rating")} type="button">
@@ -1878,6 +1870,7 @@ function GridPage({ year, onOpen, grid, error, view, setView, hold, habitColors,
               eras={eras}
               habitColors={habitColors}
               hold={hold}
+              maxCharacters={grid?.max_characters}
               onOpen={onOpen}
               view={view}
               year={item}
@@ -3328,7 +3321,7 @@ function StatusBar({ page, summary, year, activeHabitCount, lastBackup }) {
       )}
       {version && <span className="status-version">{version}</span>}
       <span className="key-hints">
-        <kbd>/</kbd> search · <kbd>n</kbd> new entry · <kbd>t</kbd> toggle view · hold <kbd>p</kbd> phases · <kbd>j</kbd> entries · <kbd>e</kbd> eras · <kbd>d</kbd> dynasties
+        <kbd>/</kbd> search · <kbd>n</kbd> new entry · <kbd>t</kbd> toggle view · hold <kbd>p</kbd> phases · <kbd>j</kbd> entries · <kbd>e</kbd> eras · <kbd>d</kbd> dynasties · <kbd>c</kbd> chars
       </span>
     </footer>
   );

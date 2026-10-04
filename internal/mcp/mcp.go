@@ -157,7 +157,7 @@ func newServer(client *client.Client) *protocol.Server {
 	addPeriodTools(add, client, "era", "/api/eras", apperror.CodeInvalidEra)
 	addPeriodTools(add, client, "dynasty", "/api/dynasties", apperror.CodeInvalidDynasty)
 
-	add("grid", "Read the selected calendar year's rating or habit-score grid; each day carries its era_id and dynasty_id.", gridSchema, func(ctx context.Context, args map[string]json.RawMessage) (any, error) {
+	add("grid", "Read the selected calendar year's rating or habit-score grid; each day carries its era_id, dynasty_id and freeform character count.", gridSchema, func(ctx context.Context, args map[string]json.RawMessage) (any, error) {
 		query, err := optionalIntAndStringQuery(args, "year", "view")
 		if err != nil {
 			return nil, err

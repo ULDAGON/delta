@@ -13,6 +13,7 @@
   --card: #131926;
   --empty: #1a2231;
   --empty-journal: #242e42;
+  --heat-max: #a9c9ff;
   --bad: #ff3b5c;
   --good: #00e676;
   --rating-1: var(--bad);
@@ -397,6 +398,7 @@ input:focus-visible {
    rows at content height instead of stretching into the leftover space, and
    the scrollbar is hidden so the TUI frame stays unbroken. */
 .page-layout {
+  --page-gutter: max(32px, calc((100vw - 1440px) / 2 + 32px));
   display: grid;
   flex: 1;
   grid-template-columns: 96px minmax(0, 1fr) 96px;
@@ -404,10 +406,11 @@ input:focus-visible {
   align-content: start;
   column-gap: 26px;
   width: 100%;
-  max-width: 1440px;
   min-height: 0;
-  margin: 0 auto;
-  padding: 26px 32px 110px;
+  /* The scroll container spans the whole window so the wheel works from the
+     side margins; the side padding centres the content at 1440px instead of
+     a max-width. */
+  padding: 26px var(--page-gutter) 110px;
   overflow-y: auto;
   overscroll-behavior: none;
   scrollbar-width: none;
@@ -730,44 +733,6 @@ input:focus-visible {
 }
 
 .day-tooltip span {
-  color: var(--dim);
-}
-
-/* Shown only while e or d is held. Anchored to the sticky toolbar so it sits
-   in the left margin beside the search box and stays put while the grids
-   scroll; transparent to the pointer. */
-.era-legend {
-  position: absolute;
-  top: 26px;
-  right: calc(100% + 18px);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: max-content;
-  max-width: 24ch;
-  max-height: calc(100vh - 160px);
-  padding: 10px 12px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  background: var(--card);
-  pointer-events: none;
-}
-
-.era-legend-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  color: var(--fg);
-}
-
-.era-legend-row span:last-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.era-legend-empty {
   color: var(--dim);
 }
 
@@ -2504,6 +2469,7 @@ kbd {
   .page-layout {
     grid-template-columns: 70px minmax(0, 1fr);
     column-gap: 14px;
+    --page-gutter: 16px;
     padding: 18px 16px 90px;
   }
 
